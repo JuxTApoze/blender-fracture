@@ -45,6 +45,7 @@
 #include "BKE_image.h"
 #include "BKE_global.h"
 #include "BKE_library.h"
+#include "BKE_library_remap.h"
 #include "BKE_main.h"
 #include "BKE_node.h"
 #include "BKE_screen.h"
@@ -765,7 +766,9 @@ static void screen_test_scale(bScreen *sc, int winsize_x, int winsize_y)
 				/* lower edge */
 				const int yval = sa->v2->vec.y - headery_init;
 				se = screen_findedge(sc, sa->v4, sa->v1);
-				select_connected_scredge(sc, se);
+				if (se != NULL) {
+					select_connected_scredge(sc, se);
+				}
 				for (sv = sc->vertbase.first; sv; sv = sv->next) {
 					if (sv != sa->v2 && sv != sa->v3) {
 						if (sv->flag) {
@@ -778,7 +781,9 @@ static void screen_test_scale(bScreen *sc, int winsize_x, int winsize_y)
 				/* upper edge */
 				const int yval = sa->v1->vec.y + headery_init;
 				se = screen_findedge(sc, sa->v2, sa->v3);
-				select_connected_scredge(sc, se);
+				if (se != NULL) {
+					select_connected_scredge(sc, se);
+				}
 				for (sv = sc->vertbase.first; sv; sv = sv->next) {
 					if (sv != sa->v1 && sv != sa->v4) {
 						if (sv->flag) {
@@ -1064,17 +1069,11 @@ bScreen *ED_screen_duplicate(wmWindow *win, bScreen *sc)
 /* screen sets cursor based on swinid */
 static void region_cursor_set(wmWindow *win, int swinid, int swin_changed)
 {
-	ScrArea *sa = win->screen->areabase.first;
-	
-	for (; sa; sa = sa->next) {
-		ARegion *ar = sa->regionbase.first;
-		for (; ar; ar = ar->next) {
+	for (ScrArea *sa = win->screen->areabase.first; sa; sa = sa->next) {
+		for (ARegion *ar = sa->regionbase.first; ar; ar = ar->next) {
 			if (ar->swinid == swinid) {
 				if (swin_changed || (ar->type && ar->type->event_cursor)) {
-					if (ar->type && ar->type->cursor)
-						ar->type->cursor(win, sa, ar);
-					else
-						WM_cursor_set(win, CURSOR_STD);
+					ED_region_cursor_set(win, sa, ar);
 				}
 				return;
 			}
@@ -1146,7 +1145,7 @@ void ED_screen_draw(wmWindow *win)
 	/* blended join arrow */
 	if (sa1 && sa2) {
 		int dir = area_getorientation(sa1, sa2);
-		int dira;
+		int dira = -1;
 		if (dir != -1) {
 			switch (dir) {
 				case 0: /* W */
@@ -1229,6 +1228,7 @@ void ED_screen_refresh(wmWindowManager *wm, wmWindow *win)
 		winrct.ymax = winsize_y - 1;
 		
 		/* header size depends on DPI, let's verify */
+		WM_window_set_dpi(win);
 		screen_refresh_headersizes();
 		
 		screen_test_scale(win->screen, winsize_x, winsize_y);
@@ -1761,7 +1761,9 @@ bool ED_screen_delete_scene(bContext *C, Scene *scene)
 
 	ED_screen_set_scene(C, CTX_wm_screen(C), newscene);
 
-	BKE_scene_unlink(bmain, scene, newscene);
+	BKE_libblock_remap(bmain, scene, newscene, ID_REMAP_SKIP_INDIRECT_USAGE | ID_REMAP_SKIP_NEVER_NULL_USAGE);
+
+	BKE_libblock_free_us(bmain, scene);
 
 	return true;
 }
@@ -1800,25 +1802,21 @@ ScrArea *ED_screen_full_newspace(bContext *C, ScrArea *sa, int type)
 		newsa->flag &= ~AREA_FLAG_TEMP_TYPE;
 	}
 
-	ED_area_newspace(C, newsa, type);
-	
+	ED_area_newspace(C, newsa, type, (newsa->flag & AREA_FLAG_TEMP_TYPE));
+
 	return newsa;
 }
 
 /**
  * \a was_prev_temp for the case previous space was a temporary fullscreen as well
  */
-void ED_screen_full_prevspace(bContext *C, ScrArea *sa, const bool was_prev_temp)
+void ED_screen_full_prevspace(bContext *C, ScrArea *sa)
 {
 	BLI_assert(sa->full);
 
 	if (sa->flag & AREA_FLAG_STACKED_FULLSCREEN) {
 		/* stacked fullscreen -> only go back to previous screen and don't toggle out of fullscreen */
 		ED_area_prevspace(C, sa);
-		/* only clear if previous space wasn't a temp fullscreen as well */
-		if (!was_prev_temp) {
-			sa->flag &= ~AREA_FLAG_TEMP_TYPE;
-		}
 	}
 	else {
 		ED_screen_restore_temp_type(C, sa);
@@ -1853,7 +1851,7 @@ void ED_screen_full_restore(bContext *C, ScrArea *sa)
 	
 	if (sl->next) {
 		if (sa->flag & AREA_FLAG_TEMP_TYPE) {
-			ED_screen_full_prevspace(C, sa, false);
+			ED_screen_full_prevspace(C, sa);
 		}
 		else {
 			ED_screen_state_toggle(C, win, sa, state);
@@ -1929,7 +1927,6 @@ ScrArea *ED_screen_state_toggle(bContext *C, wmWindow *win, ScrArea *sa, const s
 
 		ED_screen_set(C, sc);
 
-		BKE_screen_free(oldscreen);
 		BKE_libblock_free(CTX_data_main(C), oldscreen);
 
 		/* After we've restored back to SCREENNORMAL, we have to wait with
@@ -1950,6 +1947,7 @@ ScrArea *ED_screen_state_toggle(bContext *C, wmWindow *win, ScrArea *sa, const s
 		sc = ED_screen_add(win, oldscreen->scene, newname);
 		sc->state = state;
 		sc->redraws_flag = oldscreen->redraws_flag;
+		sc->temp = oldscreen->temp;
 
 		/* timer */
 		sc->animtimer = oldscreen->animtimer;
@@ -1963,7 +1961,7 @@ ScrArea *ED_screen_state_toggle(bContext *C, wmWindow *win, ScrArea *sa, const s
 		if (state == SCREENMAXIMIZED) {
 			/* returns the top small area */
 			newa = area_split(sc, (ScrArea *)sc->areabase.first, 'h', 0.99f, 1);
-			ED_area_newspace(C, newa, SPACE_INFO);
+			ED_area_newspace(C, newa, SPACE_INFO, false);
 
 			/* copy area */
 			newa = newa->prev;
@@ -2080,7 +2078,16 @@ void ED_screen_animation_timer(bContext *C, int redraws, int refresh, int sync, 
 		sad->refresh = refresh;
 		sad->flag |= (enable < 0) ? ANIMPLAY_FLAG_REVERSE : 0;
 		sad->flag |= (sync == 0) ? ANIMPLAY_FLAG_NO_SYNC : (sync == 1) ? ANIMPLAY_FLAG_SYNC : 0;
-		
+
+		ScrArea *sa = CTX_wm_area(C);
+
+		char spacetype = -1;
+
+		if (sa)
+			spacetype = sa->spacetype;
+
+		sad->from_anim_edit = (ELEM(spacetype, SPACE_IPO, SPACE_ACTION, SPACE_NLA, SPACE_TIME));
+
 		screen->animtimer->customdata = sad;
 		
 	}
@@ -2163,10 +2170,11 @@ void ED_update_for_newframe(Main *bmain, Scene *scene, int UNUSED(mute))
 	/* update animated texture nodes */
 	{
 		Tex *tex;
-		for (tex = bmain->tex.first; tex; tex = tex->id.next)
+		for (tex = bmain->tex.first; tex; tex = tex->id.next) {
 			if (tex->use_nodes && tex->nodetree) {
 				ntreeTexTagAnimated(tex->nodetree);
 			}
+		}
 	}
 	
 }

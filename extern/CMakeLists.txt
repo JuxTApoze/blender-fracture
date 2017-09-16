@@ -23,8 +23,19 @@
 #
 # ***** END GPL LICENSE BLOCK *****
 
+# Libs that adhere to strict flags
+add_subdirectory(curve_fit_nd)
+
 # Otherwise we get warnings here that we cant fix in external projects
 remove_strict_flags()
+
+# Not a strict flag, but noisy for code we don't maintain
+if(CMAKE_COMPILER_IS_GNUCC)
+	remove_cc_flag(
+		"-Wmisleading-indentation"
+	)
+endif()
+
 
 add_subdirectory(rangetree)
 add_subdirectory(wcwidth)
@@ -92,13 +103,16 @@ if(WITH_LIBMV)
 endif()
 
 if(WITH_LIBMV OR WITH_GTESTS OR (WITH_CYCLES AND WITH_CYCLES_LOGGING))
-	add_subdirectory(gflags)
+	if (NOT WITH_SYSTEM_GFLAGS)
+		add_subdirectory(gflags)
+	endif()
 	add_subdirectory(glog)
 	
 endif()
 
 if(WITH_GTESTS)
 	add_subdirectory(gtest)
+	add_subdirectory(gmock)
 endif()
 
 if(WITH_SDL AND WITH_SDL_DYNLOAD)

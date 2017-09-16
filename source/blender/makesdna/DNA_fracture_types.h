@@ -55,13 +55,15 @@ typedef struct Shard {
 	struct MVert *mvert;
 	struct MPoly *mpoly;
 	struct MLoop *mloop;
+	struct MEdge *medge;
 
 	struct CustomData vertData;
 	struct CustomData polyData;
 	struct CustomData loopData;
+	struct CustomData edgeData;
 
-	int totvert, totpoly, totloop;
-	int pad;
+	int totvert, totpoly, totloop, totedge;
+	int pad[2];
 	
 	int *cluster_colors;
 	float min[3], max[3];
@@ -89,6 +91,25 @@ typedef struct FracMesh {
 	int progress_counter;   /* counts progress */
 	int last_expected_shards;
 } FracMesh;
+
+typedef struct SharedVertGroup {
+	struct SharedVertGroup *next, *prev;
+	float rest_co[3];
+	float delta[3];
+	int index, excession_frame;
+	int exceeded, deltas_set, moved;
+	char pad[4];
+	ListBase verts;
+} SharedVertGroup;
+
+typedef struct SharedVert {
+	struct SharedVert *next, *prev;
+	float rest_co[3];
+	float delta[3];
+	int index, excession_frame;
+	int exceeded, deltas_set, moved;
+	char pad[4];
+} SharedVert;
 
 #ifdef __cplusplus
 }

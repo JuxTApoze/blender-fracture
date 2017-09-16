@@ -20,6 +20,8 @@
 #include <cassert>
 #include <iostream>
 
+#include "util/util_static_assert.h"
+
 CCL_NAMESPACE_BEGIN
 
 /* Global storage for all sort of flags used to fine-tune behavior of particular
@@ -44,6 +46,24 @@ public:
 
 		/* Whether QBVH usage is allowed or not. */
 		bool qbvh;
+
+		/* Whether split kernel is used */
+		bool split_kernel;
+	};
+
+	/* Descriptor of CUDA feature-set to be used. */
+	struct CUDA {
+		CUDA();
+
+		/* Reset flags to their defaults. */
+		void reset();
+
+		/* Whether adaptive feature based runtime compile is enabled or not.
+		 * Requires the CUDA Toolkit and only works on Linux atm. */
+		bool adaptive_compile;
+
+		/* Whether split kernel is used */
+		bool split_kernel;
 	};
 
 	/* Descriptor of OpenCL feature-set to be used. */
@@ -92,6 +112,13 @@ public:
 
 		/* Use debug version of the kernel. */
 		bool debug;
+
+		/* Use single program */
+		bool single_program;
+
+		/* TODO(mai): Currently this is only for OpenCL, but we should have it implemented for all devices. */
+		/* Artificial memory limit in bytes (0 if disabled). */
+		size_t mem_limit;
 	};
 
 	/* Get instance of debug flags registry. */
@@ -107,6 +134,9 @@ public:
 	/* Requested CPU flags. */
 	CPU cpu;
 
+	/* Requested CUDA flags. */
+	CUDA cuda;
+
 	/* Requested OpenCL flags. */
 	OpenCL opencl;
 
@@ -115,11 +145,11 @@ private:
 
 #if (__cplusplus > 199711L)
 public:
-	DebugFlags(DebugFlags const& /*other*/)     = delete;
+	explicit DebugFlags(DebugFlags const& /*other*/)     = delete;
 	void operator=(DebugFlags const& /*other*/) = delete;
 #else
 private:
-	DebugFlags(DebugFlags const& /*other*/);
+	explicit DebugFlags(DebugFlags const& /*other*/);
 	void operator=(DebugFlags const& /*other*/);
 #endif
 };

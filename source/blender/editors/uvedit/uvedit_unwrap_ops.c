@@ -49,6 +49,8 @@
 #include "BLI_uvproject.h"
 #include "BLI_string.h"
 
+#include "BLT_translation.h"
+
 #include "BKE_cdderivedmesh.h"
 #include "BKE_subsurf.h"
 #include "BKE_context.h"
@@ -61,6 +63,8 @@
 #include "BKE_editmesh.h"
 
 #include "PIL_time.h"
+
+#include "UI_interface.h"
 
 #include "ED_image.h"
 #include "ED_mesh.h"
@@ -145,9 +149,15 @@ static bool ED_uvedit_ensure_uvs(bContext *C, Scene *scene, Object *obedit)
 	if (ima)
 		ED_uvedit_assign_image(bmain, scene, obedit, ima, NULL);
 	
-	/* select new UV's */
+	/* select new UV's (ignore UV_SYNC_SELECTION in this case) */
 	BM_ITER_MESH (efa, &iter, em->bm, BM_FACES_OF_MESH) {
-		uvedit_face_select_enable(scene, em, efa, false, cd_loop_uv_offset);
+		BMIter liter;
+		BMLoop *l;
+
+		BM_ITER_ELEM (l, &liter, efa, BM_LOOPS_OF_FACE) {
+			MLoopUV *luv = BM_ELEM_CD_GET_VOID_P(l, cd_loop_uv_offset);
+			luv->flag |= MLOOPUV_VERTSEL;
+		}
 	}
 
 	return 1;
@@ -548,12 +558,13 @@ static void minimize_stretch_iteration(bContext *C, wmOperator *op, bool interac
 	RNA_int_set(op->ptr, "iterations", ms->i);
 
 	if (interactive && (PIL_check_seconds_timer() - ms->lasttime > 0.5)) {
-		char str[100];
+		char str[UI_MAX_DRAW_STR];
 
 		param_flush(ms->handle);
 
 		if (sa) {
-			BLI_snprintf(str, sizeof(str), "Minimize Stretch. Blend %.2f (Press + and -, or scroll wheel to set)", ms->blend);
+			BLI_snprintf(str, sizeof(str),
+			             IFACE_("Minimize Stretch. Blend %.2f (Press + and -, or scroll wheel to set)"), ms->blend);
 			ED_area_headerprint(sa, str);
 		}
 
@@ -1211,7 +1222,7 @@ static int unwrap_exec(bContext *C, wmOperator *op)
 	 * pass operator for warning append */
 	modifier_unwrap_state(obedit, scene, &use_subsurf_final);
 	if (use_subsurf != use_subsurf_final)
-		BKE_report(op->reports, RPT_INFO, "Subsurf modifier needs to be first to work with unwrap");
+		BKE_report(op->reports, RPT_INFO, "Subdivision Surface modifier needs to be first to work with unwrap");
 
 	/* execute unwrap */
 	ED_unwrap_lscm(scene, obedit, true);
@@ -1248,7 +1259,7 @@ void UV_OT_unwrap(wmOperatorType *ot)
 	RNA_def_boolean(ot->srna, "correct_aspect", 1, "Correct Aspect",
 	                "Map UVs taking image aspect ratio into account");
 	RNA_def_boolean(ot->srna, "use_subsurf_data", 0, "Use Subsurf Modifier",
-	                "Map UVs taking vertex position after subsurf into account");
+	                "Map UVs taking vertex position after Subdivision Surface modifier has been applied");
 	RNA_def_float_factor(ot->srna, "margin", 0.001f, 0.0f, 1.0f, "Margin", "Space between islands", 0.0f, 1.0f);
 }
 

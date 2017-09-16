@@ -61,6 +61,7 @@
 
 /* for menu/popup icons etc etc*/
 
+#include "ED_anim_api.h"
 #include "ED_numinput.h"
 #include "ED_screen.h"
 #include "ED_transform.h"
@@ -565,7 +566,7 @@ int seq_effect_find_selected(Scene *scene, Sequence *activeseq, int type, Sequen
 			}
 			if (seq1 == NULL) seq1 = seq2;
 			if (seq3 == NULL) seq3 = seq2;
-			/* fall-through */
+			ATTR_FALLTHROUGH;
 		case 2:
 			if (seq1 == NULL || seq2 == NULL) {
 				*error_str = N_("2 selected sequence strips are needed");
@@ -1509,23 +1510,20 @@ static int sequencer_slip_exec(bContext *C, wmOperator *op)
 
 static void sequencer_slip_update_header(Scene *scene, ScrArea *sa, SlipData *data, int offset)
 {
-#define HEADER_LENGTH 40
-	char msg[HEADER_LENGTH];
+	char msg[UI_MAX_DRAW_STR];
 
 	if (sa) {
 		if (hasNumInput(&data->num_input)) {
 			char num_str[NUM_STR_REP_LEN];
 			outputNumInput(&data->num_input, num_str, &scene->unit);
-			BLI_snprintf(msg, HEADER_LENGTH, "Trim offset: %s", num_str);
+			BLI_snprintf(msg, sizeof(msg), IFACE_("Trim offset: %s"), num_str);
 		}
 		else {
-			BLI_snprintf(msg, HEADER_LENGTH, "Trim offset: %d", offset);
+			BLI_snprintf(msg, sizeof(msg), IFACE_("Trim offset: %d"), offset);
 		}
 	}
 
 	ED_area_headerprint(sa, msg);
-
-#undef HEADER_LENGTH
 }
 
 static int sequencer_slip_modal(bContext *C, wmOperator *op, const wmEvent *event)
@@ -2701,6 +2699,29 @@ void SEQUENCER_OT_view_all(wmOperatorType *ot)
 	ot->flag = OPTYPE_REGISTER;
 }
 
+static int sequencer_view_frame_exec(bContext *C, wmOperator *op)
+{
+	const int smooth_viewtx = WM_operator_smooth_viewtx_get(op);
+	ANIM_center_frame(C, smooth_viewtx);
+	
+	return OPERATOR_FINISHED;
+}
+
+void SEQUENCER_OT_view_frame(wmOperatorType *ot)
+{
+	/* identifiers */
+	ot->name = "View Frame";
+	ot->idname = "SEQUENCER_OT_view_frame";
+	ot->description = "Reset viewable area to show range around current frame";
+	
+	/* api callbacks */
+	ot->exec = sequencer_view_frame_exec;
+	ot->poll = ED_operator_sequencer_active;
+	
+	/* flags */
+	ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+}
+
 /* view_all operator */
 static int sequencer_view_all_preview_exec(bContext *C, wmOperator *UNUSED(op))
 {
@@ -3335,6 +3356,9 @@ static int sequencer_swap_data_exec(bContext *C, wmOperator *op)
 	if (seq_act->sound) BKE_sound_add_scene_sound_defaults(scene, seq_act);
 	if (seq_other->sound) BKE_sound_add_scene_sound_defaults(scene, seq_other);
 
+	BKE_sequence_invalidate_cache(scene, seq_act);
+	BKE_sequence_invalidate_cache(scene, seq_other);
+
 	WM_event_add_notifier(C, NC_SCENE | ND_SEQUENCER, scene);
 
 	return OPERATOR_FINISHED;
@@ -3492,7 +3516,7 @@ static int sequencer_enable_proxies_exec(bContext *C, wmOperator *op)
 	bool proxy_50 = RNA_boolean_get(op->ptr, "proxy_50");
 	bool proxy_75 = RNA_boolean_get(op->ptr, "proxy_75");
 	bool proxy_100 = RNA_boolean_get(op->ptr, "proxy_100");
-	bool override = RNA_boolean_get(op->ptr, "override");
+	bool overwrite = RNA_boolean_get(op->ptr, "overwrite");
 	bool turnon = true;
 
 	if (ed == NULL || !(proxy_25 || proxy_50 || proxy_75 || proxy_100)) {
@@ -3528,7 +3552,7 @@ static int sequencer_enable_proxies_exec(bContext *C, wmOperator *op)
 				else 
 					seq->strip->proxy->build_size_flags &= ~SEQ_PROXY_IMAGE_SIZE_100;
 				
-				if (!override)
+				if (!overwrite)
 					seq->strip->proxy->build_flags |= SEQ_PROXY_SKIP_EXISTING;
 				else 
 					seq->strip->proxy->build_flags &= ~SEQ_PROXY_SKIP_EXISTING;
@@ -3560,7 +3584,7 @@ void SEQUENCER_OT_enable_proxies(wmOperatorType *ot)
 	RNA_def_boolean(ot->srna, "proxy_50", false, "50%", "");
 	RNA_def_boolean(ot->srna, "proxy_75", false, "75%", "");
 	RNA_def_boolean(ot->srna, "proxy_100", false, "100%", "");
-	RNA_def_boolean(ot->srna, "override", false, "Override", "");
+	RNA_def_boolean(ot->srna, "overwrite", false, "Overwrite", "");
 }
 
 /* change ops */

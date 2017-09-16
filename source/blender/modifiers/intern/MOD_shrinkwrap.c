@@ -101,8 +101,8 @@ static void foreachObjectLink(ModifierData *md, Object *ob, ObjectWalkFunc walk,
 {
 	ShrinkwrapModifierData *smd = (ShrinkwrapModifierData *) md;
 
-	walk(userData, ob, &smd->target, IDWALK_NOP);
-	walk(userData, ob, &smd->auxTarget, IDWALK_NOP);
+	walk(userData, ob, &smd->target, IDWALK_CB_NOP);
+	walk(userData, ob, &smd->auxTarget, IDWALK_CB_NOP);
 }
 
 static void deformVerts(ModifierData *md, Object *ob,
@@ -194,6 +194,7 @@ ModifierTypeInfo modifierType_Shrinkwrap = {
 	/* type */              eModifierTypeType_OnlyDeform,
 	/* flags */             eModifierTypeFlag_AcceptsMesh |
 	                        eModifierTypeFlag_AcceptsCVs |
+	                        eModifierTypeFlag_AcceptsLattice |
 	                        eModifierTypeFlag_SupportsEditmode |
 	                        eModifierTypeFlag_EnableInEditmode,
 

@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <GL/glew.h>
 
+#include <opensubdiv/version.h>
 #include <opensubdiv/osd/glMesh.h>
 
 /* CPU Backend */
@@ -67,10 +68,22 @@
 
 #include <opensubdiv/osd/glPatchTable.h>
 #include <opensubdiv/far/stencilTable.h>
+#include <opensubdiv/far/primvarRefiner.h>
 
 #include "opensubdiv_intern.h"
+#include "opensubdiv_topology_refiner.h"
 
 #include "MEM_guardedalloc.h"
+
+#include <string>
+#include <vector>
+
+using std::string;
+using std::vector;
+
+#define STRINGIFY_ARG(x) "" #x
+#define STRINGIFY_APPEND(a, b) "" a #b
+#define STRINGIFY(x) STRINGIFY_APPEND("", x)
 
 /* **************** Types declaration **************** */
 
@@ -142,11 +155,105 @@ typedef Mesh<GLVertexBuffer,
              GLPatchTable> OsdGLSLComputeMesh;
 #endif
 
+namespace {
+
+#if !defined(OPENSUBDIV_VERSION_NUMBER) && !defined(OPENSUBDIV_VERSION_MINOR)
+void stringSplit(vector<string>* tokens,
+                 const string& str,
+                 const string& separators,
+                 bool skip_empty) {
+	size_t token_start = 0, token_length = 0;
+	for (size_t i = 0; i < str.length(); ++i) {
+		const char ch = str[i];
+		if (separators.find(ch) == string::npos) {
+			/* Append non-separator char to a token. */
+			++token_length;
+		} else {
+			/* Append current token to the list (if any). */
+			if (token_length > 0 || !skip_empty) {
+				string token = str.substr(token_start, token_length);
+				tokens->push_back(token);
+			}
+			/* Re-set token pointers, */
+			token_start = i + 1;
+			token_length = 0;
+		}
+	}
+	/* Append token which might be at the end of the string. */
+	if ((token_length != 0) ||
+	    (!skip_empty && token_start > 0 &&
+	     separators.find(str[token_start-1]) != string::npos)) {
+		string token = str.substr(token_start, token_length);
+		tokens->push_back(token);
+	}
+}
+#endif
+
+struct FVarVertex {
+	float u, v;
+	void Clear() {
+		u = v = 0.0f;
+	}
+	void AddWithWeight(FVarVertex const & src, float weight) {
+		u += weight * src.u;
+		v += weight * src.v;
+	}
+};
+
+static void interpolate_fvar_data(OpenSubdiv::Far::TopologyRefiner& refiner,
+                                  const std::vector<float> uvs,
+                                  std::vector<float> &fvar_data) {
+	/* TODO(sergey): Make it somehow more generic way. */
+	const int fvar_width = 2;
+	const int max_level = refiner.GetMaxLevel();
+	size_t fvar_data_offset = 0, values_offset = 0;
+	for (int channel = 0; channel < refiner.GetNumFVarChannels(); ++channel) {
+		const int num_values = refiner.GetLevel(0).GetNumFVarValues(channel) * 2,
+		          num_values_max = refiner.GetLevel(max_level).GetNumFVarValues(channel),
+		          num_values_total = refiner.GetNumFVarValuesTotal(channel);
+		if (num_values_total <= 0) {
+			continue;
+		}
+		OpenSubdiv::Far::PrimvarRefiner primvar_refiner(refiner);
+		if (refiner.IsUniform()) {
+			/* For uniform we only keep the highest level of refinement. */
+			fvar_data.resize(fvar_data.size() + num_values_max * fvar_width);
+			std::vector<FVarVertex> buffer(num_values_total - num_values_max);
+			FVarVertex *src = &buffer[0];
+			memcpy(src, &uvs[values_offset], num_values * sizeof(float));
+			/* Defer the last level to treat separately with its alternate
+			 * destination.
+			 */
+			for (int level = 1; level < max_level; ++level) {
+				FVarVertex *dst = src + refiner.GetLevel(level-1).GetNumFVarValues(channel);
+				primvar_refiner.InterpolateFaceVarying(level, src, dst, channel);
+				src = dst;
+			}
+			FVarVertex *dst = reinterpret_cast<FVarVertex *>(&fvar_data[fvar_data_offset]);
+			primvar_refiner.InterpolateFaceVarying(max_level, src, dst, channel);
+			fvar_data_offset += num_values_max * fvar_width;
+		} else {
+			/* For adaptive we keep all levels. */
+			fvar_data.resize(fvar_data.size() + num_values_total * fvar_width);
+			FVarVertex *src = reinterpret_cast<FVarVertex *>(&fvar_data[fvar_data_offset]);
+			memcpy(src, &uvs[values_offset], num_values * sizeof(float));
+			for (int level = 1; level <= max_level; ++level) {
+				FVarVertex *dst = src + refiner.GetLevel(level-1).GetNumFVarValues(channel);
+				primvar_refiner.InterpolateFaceVarying(level, src, dst, channel);
+				src = dst;
+			}
+			fvar_data_offset += num_values_total * fvar_width;
+		}
+		values_offset += num_values;
+	}
+}
+
+}  // namespace
+
 struct OpenSubdiv_GLMesh *openSubdiv_createOsdGLMeshFromTopologyRefiner(
         OpenSubdiv_TopologyRefinerDescr *topology_refiner,
         int evaluator_type,
-        int level,
-        int /*subdivide_uvs*/)
+        int level)
 {
 	using OpenSubdiv::Far::TopologyRefiner;
 
@@ -164,7 +271,7 @@ struct OpenSubdiv_GLMesh *openSubdiv_createOsdGLMeshFromTopologyRefiner(
 	const int num_varying_elements = 3;
 
 	GLMeshInterface *mesh = NULL;
-	TopologyRefiner *refiner = (TopologyRefiner*)topology_refiner;
+	TopologyRefiner *refiner = topology_refiner->osd_refiner;
 
 	switch(evaluator_type) {
 #define CHECK_EVALUATOR_TYPE(type, class) \
@@ -210,13 +317,23 @@ struct OpenSubdiv_GLMesh *openSubdiv_createOsdGLMeshFromTopologyRefiner(
 		(OpenSubdiv_GLMesh *) OBJECT_GUARDED_NEW(OpenSubdiv_GLMesh);
 	gl_mesh->evaluator_type = evaluator_type;
 	gl_mesh->descriptor = (OpenSubdiv_GLMeshDescr *) mesh;
-	gl_mesh->topology_refiner = (OpenSubdiv_TopologyRefinerDescr*)refiner;
+	gl_mesh->topology_refiner = topology_refiner;
+
+	if (refiner->GetNumFVarChannels() > 0) {
+		std::vector<float> fvar_data;
+		interpolate_fvar_data(*refiner, topology_refiner->uvs, fvar_data);
+		openSubdiv_osdGLAllocFVar(topology_refiner, gl_mesh, &fvar_data[0]);
+	}
+	else {
+		gl_mesh->fvar_data = NULL;
+	}
 
 	return gl_mesh;
 }
 
 void openSubdiv_deleteOsdGLMesh(struct OpenSubdiv_GLMesh *gl_mesh)
 {
+	openSubdiv_osdGLDestroyFVar(gl_mesh);
 	switch (gl_mesh->evaluator_type) {
 #define CHECK_EVALUATOR_TYPE(type, class) \
 		case OPENSUBDIV_EVALUATOR_ ## type: \
@@ -249,6 +366,8 @@ void openSubdiv_deleteOsdGLMesh(struct OpenSubdiv_GLMesh *gl_mesh)
 #undef CHECK_EVALUATOR_TYPE
 	}
 
+	/* NOTE: OSD refiner was owned by gl_mesh, no need to free it here. */
+	OBJECT_GUARDED_DELETE(gl_mesh->topology_refiner, OpenSubdiv_TopologyRefinerDescr);
 	OBJECT_GUARDED_DELETE(gl_mesh, OpenSubdiv_GLMesh);
 }
 
@@ -299,6 +418,36 @@ int openSubdiv_supportGPUDisplay(void)
 	return openSubdiv_gpu_legacy_support() &&
 	       (GLEW_VERSION_3_2 ||
 	       (GLEW_VERSION_3_1 && GLEW_EXT_geometry_shader4) ||
-	       (GLEW_VERSION_3_0 && GLEW_EXT_geometry_shader4 && GLEW_ARB_uniform_buffer_object && (GLEW_ARB_texture_buffer_object || GLEW_EXT_texture_buffer_object)));
+	       (GLEW_VERSION_3_0 &&
+	        GLEW_EXT_geometry_shader4 &&
+	        GLEW_ARB_uniform_buffer_object &&
+	        (GLEW_ARB_texture_buffer_object || GLEW_EXT_texture_buffer_object)));
 	/* also ARB_explicit_attrib_location? */
+}
+
+int openSubdiv_getVersionHex(void)
+{
+#if defined(OPENSUBDIV_VERSION_NUMBER)
+	return OPENSUBDIV_VERSION_NUMBER;
+#elif defined(OPENSUBDIV_VERSION_MAJOR)
+	return OPENSUBDIV_VERSION_MAJOR * 10000 +
+	       OPENSUBDIV_VERSION_MINOR * 100 +
+	       OPENSUBDIV_VERSION_PATCH;
+#elif defined(OPENSUBDIV_VERSION)
+	const char* version = STRINGIFY(OPENSUBDIV_VERSION);
+	if (version[0] == 'v') {
+		version += 1;
+	}
+	int major = 0, minor = 0, patch = 0;
+	vector<string> tokens;
+	stringSplit(&tokens, version, "_", true);
+	if (tokens.size() == 3) {
+		major = atoi(tokens[0].c_str());
+		minor = atoi(tokens[1].c_str());
+		patch = atoi(tokens[2].c_str());
+	}
+	return major * 10000 + minor * 100 + patch;
+#else
+	return 0;
+#endif
 }

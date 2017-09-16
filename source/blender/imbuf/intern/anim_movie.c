@@ -37,10 +37,7 @@
 #include <mmsystem.h>
 #include <memory.h>
 #include <commdlg.h>
-
-#ifndef FREE_WINDOWS
 #include <vfw.h>
-#endif
 
 #undef AVIIF_KEYFRAME /* redefined in AVI_avi.h */
 #undef AVIIF_LIST /* redefined in AVI_avi.h */
@@ -173,7 +170,7 @@ static void an_stringenc(char *string, const char *head, const char *tail, unsig
 #ifdef WITH_AVI
 static void free_anim_avi(struct anim *anim)
 {
-#if defined(_WIN32) && !defined(FREE_WINDOWS)
+#if defined(_WIN32)
 	int i;
 #endif
 
@@ -184,7 +181,7 @@ static void free_anim_avi(struct anim *anim)
 	MEM_freeN(anim->avi);
 	anim->avi = NULL;
 
-#if defined(_WIN32) && !defined(FREE_WINDOWS)
+#if defined(_WIN32)
 
 	if (anim->pgf) {
 		AVIStreamGetFrameClose(anim->pgf);
@@ -283,7 +280,7 @@ static int startavi(struct anim *anim)
 {
 
 	AviError avierror;
-#if defined(_WIN32) && !defined(FREE_WINDOWS)
+#if defined(_WIN32)
 	HRESULT hr;
 	int i, firstvideo = -1;
 	int streamcount;
@@ -304,7 +301,7 @@ static int startavi(struct anim *anim)
 
 	avierror = AVI_open_movie(anim->name, anim->avi);
 
-#if defined(_WIN32) && !defined(FREE_WINDOWS)
+#if defined(_WIN32)
 	if (avierror == AVI_ERROR_COMPRESSION) {
 		AVIFileInit();
 		hr = AVIFileOpen(&anim->pfile, anim->name, OF_READ, 0L);
@@ -401,7 +398,7 @@ static ImBuf *avi_fetchibuf(struct anim *anim, int position)
 		return NULL;
 	}
 
-#if defined(_WIN32) && !defined(FREE_WINDOWS)
+#if defined(_WIN32)
 	if (anim->avistreams) {
 		LPBITMAPINFOHEADER lpbi;
 
@@ -442,6 +439,11 @@ static ImBuf *avi_fetchibuf(struct anim *anim, int position)
 #endif  /* WITH_AVI */
 
 #ifdef WITH_FFMPEG
+
+BLI_INLINE bool need_aligned_ffmpeg_buffer(struct anim *anim)
+{
+	return (anim->x & 31) != 0;
+}
 
 static int startffmpeg(struct anim *anim)
 {
@@ -517,9 +519,9 @@ static int startffmpeg(struct anim *anim)
 		anim->duration = pFormatCtx->streams[videoStream]->nb_frames;
 	}
 	else {
-		anim->duration = ceil(pFormatCtx->duration *
-		                      av_q2d(frame_rate) /
-		                      AV_TIME_BASE);
+		anim->duration = (int)(pFormatCtx->duration *
+		                       av_q2d(frame_rate) /
+		                       AV_TIME_BASE + 0.5f);
 	}
 
 	frs_num = frame_rate.num;
@@ -560,6 +562,23 @@ static int startffmpeg(struct anim *anim)
 	anim->pFrameDeinterlaced = av_frame_alloc();
 	anim->pFrameRGB = av_frame_alloc();
 
+	if (need_aligned_ffmpeg_buffer(anim)) {
+		anim->pFrameRGB->format = AV_PIX_FMT_RGBA;
+		anim->pFrameRGB->width  = anim->x;
+		anim->pFrameRGB->height = anim->y;
+
+		if (av_frame_get_buffer(anim->pFrameRGB, 32) < 0) {
+			fprintf(stderr, "Could not allocate frame data.\n");
+			avcodec_close(anim->pCodecCtx);
+			avformat_close_input(&anim->pFormatCtx);
+			av_frame_free(&anim->pFrameRGB);
+			av_frame_free(&anim->pFrameDeinterlaced);
+			av_frame_free(&anim->pFrame);
+			anim->pCodecCtx = NULL;
+			return -1;
+		}
+	}
+
 	if (avpicture_get_size(AV_PIX_FMT_RGBA, anim->x, anim->y) !=
 	    anim->x * anim->y * 4)
 	{
@@ -567,9 +586,9 @@ static int startffmpeg(struct anim *anim)
 		        "ffmpeg has changed alloc scheme ... ARGHHH!\n");
 		avcodec_close(anim->pCodecCtx);
 		avformat_close_input(&anim->pFormatCtx);
-		av_free(anim->pFrameRGB);
-		av_free(anim->pFrameDeinterlaced);
-		av_free(anim->pFrame);
+		av_frame_free(&anim->pFrameRGB);
+		av_frame_free(&anim->pFrameDeinterlaced);
+		av_frame_free(&anim->pFrame);
 		anim->pCodecCtx = NULL;
 		return -1;
 	}
@@ -608,9 +627,9 @@ static int startffmpeg(struct anim *anim)
 		        "Can't transform color space??? Bailing out...\n");
 		avcodec_close(anim->pCodecCtx);
 		avformat_close_input(&anim->pFormatCtx);
-		av_free(anim->pFrameRGB);
-		av_free(anim->pFrameDeinterlaced);
-		av_free(anim->pFrame);
+		av_frame_free(&anim->pFrameRGB);
+		av_frame_free(&anim->pFrameDeinterlaced);
+		av_frame_free(&anim->pFrame);
 		anim->pCodecCtx = NULL;
 		return -1;
 	}
@@ -685,10 +704,12 @@ static void ffmpeg_postprocess(struct anim *anim)
 			input = anim->pFrameDeinterlaced;
 		}
 	}
-	
-	avpicture_fill((AVPicture *) anim->pFrameRGB,
-	               (unsigned char *) ibuf->rect,
-	               AV_PIX_FMT_RGBA, anim->x, anim->y);
+
+	if (!need_aligned_ffmpeg_buffer(anim)) {
+		avpicture_fill((AVPicture *) anim->pFrameRGB,
+		               (unsigned char *) ibuf->rect,
+		               AV_PIX_FMT_RGBA, anim->x, anim->y);
+	}
 
 	if (ENDIAN_ORDER == B_ENDIAN) {
 		int *dstStride   = anim->pFrameRGB->linesize;
@@ -751,6 +772,16 @@ static void ffmpeg_postprocess(struct anim *anim)
 		          anim->y,
 		          dst2,
 		          dstStride2);
+	}
+
+	if (need_aligned_ffmpeg_buffer(anim)) {
+		uint8_t *src = anim->pFrameRGB->data[0];
+		uint8_t *dst = (uint8_t *) ibuf->rect;
+		for (int y = 0; y < anim->y; y++) {
+			memcpy(dst, src, anim->x * 4);
+			dst += anim->x * 4;
+			src += anim->pFrameRGB->linesize[0];
+		}
 	}
 
 	if (filter_y) {
@@ -1134,13 +1165,28 @@ static void free_anim_ffmpeg(struct anim *anim)
 	if (anim->pCodecCtx) {
 		avcodec_close(anim->pCodecCtx);
 		avformat_close_input(&anim->pFormatCtx);
-		av_free(anim->pFrameRGB);
+
+		/* Special case here: pFrame could share pointers with codec,
+		 * so in order to avoid double-free we don't use av_frame_free()
+		 * to free the frame.
+		 *
+		 * Could it be a bug in FFmpeg?
+		 */
 		av_free(anim->pFrame);
 
-		if (anim->ib_flags & IB_animdeinterlace) {
-			MEM_freeN(anim->pFrameDeinterlaced->data[0]);
+		if (!need_aligned_ffmpeg_buffer(anim)) {
+			/* If there's no need for own aligned buffer it means that FFmpeg's
+			 * frame shares the same buffer as temporary ImBuf. In this case we
+			 * should not free the buffer when freeing the FFmpeg buffer.
+			 */
+			avpicture_fill((AVPicture *)anim->pFrameRGB,
+			               NULL,
+			               AV_PIX_FMT_RGBA,
+			               anim->x, anim->y);
 		}
-		av_free(anim->pFrameDeinterlaced);
+		av_frame_free(&anim->pFrameRGB);
+		av_frame_free(&anim->pFrameDeinterlaced);
+
 		sws_freeContext(anim->img_convert_ctx);
 		IMB_freeImBuf(anim->last_frame);
 		if (anim->next_packet.stream_index != -1) {

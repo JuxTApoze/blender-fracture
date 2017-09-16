@@ -36,12 +36,14 @@
 
 #include "BKE_cdderivedmesh.h"
 #include "BKE_dynamicpaint.h"
+#include "BKE_library.h"
 #include "BKE_library_query.h"
 #include "BKE_modifier.h"
 
 #include "depsgraph_private.h"
 #include "DEG_depsgraph_build.h"
 
+#include "MOD_modifiertypes.h"
 
 static void initData(ModifierData *md) 
 {
@@ -58,6 +60,15 @@ static void copyData(ModifierData *md, ModifierData *target)
 	DynamicPaintModifierData *tpmd = (DynamicPaintModifierData *)target;
 	
 	dynamicPaint_Modifier_copy(pmd, tpmd);
+
+	if (tpmd->canvas) {
+		for (DynamicPaintSurface *surface = tpmd->canvas->surfaces.first; surface; surface = surface->next) {
+			id_us_plus((ID *)surface->init_texture);
+		}
+	}
+	if (tpmd->brush) {
+		id_us_plus((ID *)tpmd->brush->mat);
+	}
 }
 
 static void freeData(ModifierData *md)
@@ -114,6 +125,11 @@ static DerivedMesh *applyModifier(ModifierData *md, Object *ob,
 	return dm;
 }
 
+static bool is_brush_cb(Object *UNUSED(ob), ModifierData *pmd)
+{
+	return ((DynamicPaintModifierData *)pmd)->brush != NULL;
+}
+
 static void updateDepgraph(ModifierData *md, DagForest *forest,
                            struct Main *UNUSED(bmain),
                            struct Scene *scene,
@@ -124,17 +140,21 @@ static void updateDepgraph(ModifierData *md, DagForest *forest,
 
 	/* add relation from canvases to all brush objects */
 	if (pmd && pmd->canvas) {
-		Base *base = scene->base.first;
-
-		for (; base; base = base->next) {
-			DynamicPaintModifierData *pmd2 =
-			        (DynamicPaintModifierData *)modifiers_findByType(base->object, eModifierType_DynamicPaint);
-
-			if (pmd2 && pmd2->brush && ob != base->object) {
-				DagNode *brushNode = dag_get_node(forest, base->object);
-				dag_add_relation(forest, brushNode, obNode, DAG_RL_DATA_DATA | DAG_RL_OB_DATA, "Dynamic Paint Brush");
+#ifdef WITH_LEGACY_DEPSGRAPH
+		for (DynamicPaintSurface *surface = pmd->canvas->surfaces.first; surface; surface = surface->next) {
+			if (surface->effect & MOD_DPAINT_EFFECT_DO_DRIP) {
+				dag_add_forcefield_relations(forest, scene, ob, obNode, surface->effector_weights, true, 0, "Dynamic Paint Field");
 			}
+
+			/* Actual code uses custom loop over group/scene without layer checks in dynamicPaint_doStep */
+			dag_add_collision_relations(forest, scene, ob, obNode, surface->brush_group, -1, eModifierType_DynamicPaint, is_brush_cb, false, "Dynamic Paint Brush");
 		}
+#else
+	(void)forest;
+	(void)scene;
+	(void)ob;
+	(void)obNode;
+#endif
 	}
 }
 
@@ -147,13 +167,13 @@ static void updateDepsgraph(ModifierData *md,
 	DynamicPaintModifierData *pmd = (DynamicPaintModifierData *)md;
 	/* Add relation from canvases to all brush objects. */
 	if (pmd->canvas != NULL) {
-		Base *base = scene->base.first;
-		for (; base; base = base->next) {
-			DynamicPaintModifierData *pmd2 =
-			        (DynamicPaintModifierData *)modifiers_findByType(base->object, eModifierType_DynamicPaint);
-			if (pmd2 && pmd2->brush && ob != base->object) {
-				DEG_add_object_relation(node, base->object, DEG_OB_COMP_TRANSFORM, "Dynamic Paint Brush");
+		for (DynamicPaintSurface *surface = pmd->canvas->surfaces.first; surface; surface = surface->next) {
+			if (surface->effect & MOD_DPAINT_EFFECT_DO_DRIP) {
+				DEG_add_forcefield_relations(node, scene, ob, surface->effector_weights, true, 0, "Dynamic Paint Field");
 			}
+
+			/* Actual code uses custom loop over group/scene without layer checks in dynamicPaint_doStep */
+			DEG_add_collision_relations(node, scene, ob, surface->brush_group, -1, eModifierType_DynamicPaint, is_brush_cb, false, "Dynamic Paint Brush");
 		}
 	}
 }
@@ -172,15 +192,15 @@ static void foreachIDLink(ModifierData *md, Object *ob,
 		DynamicPaintSurface *surface = pmd->canvas->surfaces.first;
 
 		for (; surface; surface = surface->next) {
-			walk(userData, ob, (ID **)&surface->brush_group, IDWALK_NOP);
-			walk(userData, ob, (ID **)&surface->init_texture, IDWALK_USER);
+			walk(userData, ob, (ID **)&surface->brush_group, IDWALK_CB_NOP);
+			walk(userData, ob, (ID **)&surface->init_texture, IDWALK_CB_USER);
 			if (surface->effector_weights) {
-				walk(userData, ob, (ID **)&surface->effector_weights->group, IDWALK_NOP);
+				walk(userData, ob, (ID **)&surface->effector_weights->group, IDWALK_CB_NOP);
 			}
 		}
 	}
 	if (pmd->brush) {
-		walk(userData, ob, (ID **)&pmd->brush->mat, IDWALK_USER);
+		walk(userData, ob, (ID **)&pmd->brush->mat, IDWALK_CB_USER);
 	}
 }
 

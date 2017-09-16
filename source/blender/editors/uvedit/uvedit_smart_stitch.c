@@ -46,6 +46,8 @@
 #include "BLI_math_vector.h"
 #include "BLI_string.h"
 
+#include "BLT_translation.h"
+
 #include "BIF_gl.h"
 
 #include "BKE_context.h"
@@ -53,6 +55,8 @@
 #include "BKE_depsgraph.h"
 #include "BKE_mesh_mapping.h"
 #include "BKE_editmesh.h"
+
+#include "UI_interface.h"
 
 #include "ED_mesh.h"
 #include "ED_uvedit.h"
@@ -259,25 +263,24 @@ static void stitch_preview_delete(StitchPreviewer *stitch_preview)
 	}
 }
 
-#define HEADER_LENGTH 256
-
 /* This function updates the header of the UV editor when the stitch tool updates its settings */
 static void stitch_update_header(StitchState *state, bContext *C)
 {
-	static char str[] =
+	const char *str = IFACE_(
 	    "Mode(TAB) %s, "
 	    "(S)nap %s, "
 	    "(M)idpoints %s, "
 	    "(L)imit %.2f (Alt Wheel adjust) %s, "
 	    "Switch (I)sland, "
-	    "shift select vertices";
+	    "shift select vertices"
+	);
 
-	char msg[HEADER_LENGTH];
+	char msg[UI_MAX_DRAW_STR];
 	ScrArea *sa = CTX_wm_area(C);
 
 	if (sa) {
-		BLI_snprintf(msg, HEADER_LENGTH, str,
-		             state->mode == STITCH_VERT ? "Vertex" : "Edge",
+		BLI_snprintf(msg, sizeof(msg), str,
+		             state->mode == STITCH_VERT ? IFACE_("Vertex") : IFACE_("Edge"),
 		             WM_bool_as_string(state->snap_islands),
 		             WM_bool_as_string(state->midpoints),
 		             state->limit_dist,
@@ -456,7 +459,7 @@ static void stitch_calculate_island_snapping(
 				            island_stitch_data[i].num_rot_elements_neg) / totelem;
 			}
 
-			rotate_m2(rotation_mat, rotation);
+			angle_to_mat2(rotation_mat, rotation);
 			numOfIslandUVs = getNumOfIslandUvs(state->element_map, i);
 			element = &state->element_map->buf[state->element_map->islandIndices[i]];
 			for (j = 0; j < numOfIslandUVs; j++, element++) {
@@ -2113,6 +2116,7 @@ static int stitch_modal(bContext *C, wmOperator *op, const wmEvent *event)
 				}
 				break;
 			}
+			ATTR_FALLTHROUGH;
 		case PADENTER:
 		case RETKEY:
 			if (event->val == KM_PRESS) {

@@ -170,7 +170,7 @@ void ED_object_assign_active_image(Main *bmain, Object *ob, int mat_nr, Image *i
 
 	if (node && is_image_texture_node(node)) {
 		node->id = &ima->id;
-		ED_node_tag_update_nodetree(bmain, ma->nodetree);
+		ED_node_tag_update_nodetree(bmain, ma->nodetree, node);
 	}
 }
 
@@ -1136,8 +1136,13 @@ static void uv_select_linked(Scene *scene, Image *ima, BMEditMesh *em, const flo
 
 	BM_mesh_elem_table_ensure(em->bm, BM_FACE); /* we can use this too */
 
-	/* use winding so we don't consider overlapping islands as connected, see T44320 */
-	vmap = BM_uv_vert_map_create(em->bm, limit, !select_faces, true);
+	/* Note, we had 'use winding' so we don't consider overlapping islands as connected, see T44320
+	 * this made *every* projection split the island into front/back islands.
+	 * Keep 'use_winding' to false, see: T50970.
+	 *
+	 * Better solve this by having a delimit option for select-linked operator,
+	 * keeping island-select working as is. */
+	vmap = BM_uv_vert_map_create(em->bm, limit, !select_faces, false);
 
 	if (vmap == NULL)
 		return;
@@ -4302,7 +4307,7 @@ void ED_keymap_uvedit(wmKeyConfig *keyconf)
 	/* border/circle selection */
 	kmi = WM_keymap_add_item(keymap, "UV_OT_select_border", BKEY, KM_PRESS, 0, 0);
 	RNA_boolean_set(kmi->ptr, "pinned", false);
-	kmi = WM_keymap_add_item(keymap, "UV_OT_select_border", BKEY, KM_PRESS, KM_SHIFT, 0);
+	kmi = WM_keymap_add_item(keymap, "UV_OT_select_border", BKEY, KM_PRESS, KM_CTRL, 0);
 	RNA_boolean_set(kmi->ptr, "pinned", true);
 
 	WM_keymap_add_item(keymap, "UV_OT_circle_select", CKEY, KM_PRESS, 0, 0);

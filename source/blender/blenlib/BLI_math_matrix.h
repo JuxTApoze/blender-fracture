@@ -138,9 +138,13 @@ bool invert_m3_m3(float R[3][3], float A[3][3]);
 bool invert_m4(float R[4][4]);
 bool invert_m4_m4(float R[4][4], float A[4][4]);
 
-/* double ariphmetics */
+/* double arithmetic (mixed float/double) */
 void mul_m4_v4d(float M[4][4], double r[4]);
 void mul_v4d_m4v4d(double r[4], float M[4][4], double v[4]);
+
+/* double matrix functions (no mixing types) */
+void mul_v3_m3v3_db(double r[3], double M[3][3], const double a[3]);
+void mul_m3_v3_db(double M[3][3], double r[3]);
 
 
 /****************************** Linear Algebra *******************************/
@@ -215,7 +219,6 @@ void mat4_to_size(float r[3], float M[4][4]);
 
 void translate_m4(float mat[4][4], float tx, float ty, float tz);
 void rotate_m4(float mat[4][4], const char axis, const float angle);
-void rotate_m2(float mat[2][2], const float angle);
 void transform_pivot_set_m4(float mat[4][4], const float pivot[3]);
 
 void mat3_to_rot_size(float rot[3][3], float size[3], float mat3[3][3]);
@@ -246,6 +249,9 @@ bool is_negative_m4(float mat[4][4]);
 bool is_zero_m3(float mat[3][3]);
 bool is_zero_m4(float mat[4][4]);
 
+bool equals_m3m3(float mat1[3][3], float mat2[3][3]);
+bool equals_m4m4(float mat1[4][4], float mat2[4][4]);
+
 /* SpaceTransform helper */
 typedef struct SpaceTransform {
 	float local2target[4][4];
@@ -266,7 +272,7 @@ void BLI_space_transform_invert_normal(const struct SpaceTransform *data, float 
 /*********************************** Other ***********************************/
 
 void print_m3(const char *str, float M[3][3]);
-void print_m4(const char *str, float M[3][4]);
+void print_m4(const char *str, float M[4][4]);
 
 #define print_m3_id(M) print_m3(STRINGIFY(M), M)
 #define print_m4_id(M) print_m4(STRINGIFY(M), M)

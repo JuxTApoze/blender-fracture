@@ -77,6 +77,8 @@
 #include "BKE_mesh_mapping.h"
 #include "BKE_modifier.h"
 
+#include "MOD_modifiertypes.h"
+
 #include "bmesh.h"
 
 typedef struct {
@@ -1745,7 +1747,9 @@ static BMesh *build_skin(SkinNode *skin_nodes,
 	int v;
 
 	so.smd = smd;
-	so.bm = BM_mesh_create(&bm_mesh_allocsize_default);
+	so.bm = BM_mesh_create(
+	        &bm_mesh_allocsize_default,
+	        &((struct BMeshCreateParams){.use_toolflags = true,}));
 	so.mat_nr = 0;
 	
 	/* BMESH_TODO: bumping up the stack level (see MOD_array.c) */

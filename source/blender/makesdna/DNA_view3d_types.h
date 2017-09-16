@@ -225,7 +225,8 @@ typedef struct View3D {
 	struct GPUFXSettings fx_settings;
 
 	void *properties_storage;		/* Nkey panel stores stuff here (runtime only!) */
-	struct Material *defmaterial;	/* used by matcap now */
+	/* Allocated per view, not library data (used by matcap). */
+	struct Material *defmaterial;
 
 	/* XXX deprecated? */
 	struct bGPdata *gpd  DNA_DEPRECATED;		/* Grease-Pencil Data (annotation layers) */
@@ -237,6 +238,13 @@ typedef struct View3D {
 	float stereo3d_convergence_factor;
 	float stereo3d_volume_alpha;
 	float stereo3d_convergence_alpha;
+
+	/* Previous viewport draw type.
+	 * Runtime-only, set in the rendered viewport toggle operator.
+	 */
+	short prev_drawtype;
+	short pad1;
+	float pad2;
 } View3D;
 
 
@@ -291,7 +299,7 @@ typedef struct View3D {
 #define RV3D_VIEW_CAMERA		 8
 
 #define RV3D_VIEW_IS_AXIS(view) \
-	((view >= RV3D_VIEW_FRONT) && (view <= RV3D_VIEW_BOTTOM))
+	(((view) >= RV3D_VIEW_FRONT) && ((view) <= RV3D_VIEW_BOTTOM))
 
 /* View3d->flag2 (short) */
 #define V3D_RENDER_OVERRIDE		(1 << 2)

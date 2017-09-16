@@ -87,21 +87,37 @@ class PHYSICS_PT_fracture(PhysicButtonsPanel, Panel):
         row.prop(md, "fracture_mode")
 
         if md.fracture_mode == 'EXTERNAL':
-            layout.context_pointer_set("modifier", md)
-            layout.operator("object.rigidbody_convert_to_objects", text = "Convert To Objects")
+        #    col = layout.column(align=True)
+        #    col.context_pointer_set("modifier", md)
+        #    col.operator("object.rigidbody_convert_to_objects", text = "Convert To Objects")
+        #    col.operator("object.rigidbody_convert_to_keyframes", text = "Convert To Keyframed Objects")
             return
 
         if md.fracture_mode == 'DYNAMIC':
-            layout.prop(md, "dynamic_force")
-            layout.prop(md, "limit_impact")
+            row = layout.row(align=True)
+            row.prop(md, "dynamic_force")
+            row.prop(md, "dynamic_percentage")
+            col = layout.column(align=True)
+            col.prop(md, "dynamic_new_constraints")
+            row = col.row(align=True)
+            row.prop(md, "limit_impact")
+            row.prop(md, "dynamic_min_size")
 
         layout.prop(md, "frac_algorithm")
+        if md.frac_algorithm in {'BOOLEAN', 'BOOLEAN_FRACTAL'}:
+            col = layout.column(align=True)
+            col.label(text="Boolean Solver:")
+            col.prop(md, "boolean_solver", text="")
+            if md.boolean_solver == 'BMESH':
+                col.prop(md, "boolean_double_threshold")
         col = layout.column(align=True)
         col.prop(md, "shard_count")
         col.prop(md, "cluster_count")
         col.prop(md, "point_seed")
         layout.prop(md, "cluster_group")
-        layout.prop(md, "cluster_constraint_type")
+        col = layout.column(align=True)
+        col.prop(md, "constraint_type")
+        col.prop(md, "cluster_constraint_type")
         if md.frac_algorithm in {'BOOLEAN', 'BISECT_FILL', 'BISECT_FAST_FILL', 'BOOLEAN_FRACTAL'}:
             col = layout.column()
             col.prop(md, "inner_material")
@@ -135,10 +151,13 @@ class PHYSICS_PT_fracture(PhysicButtonsPanel, Panel):
                 col.prop(md, "cutter_axis")
             col.prop(md, "extra_group")
             col.prop(md, "dm_group")
-            if md.frac_algorithm == 'BOOLEAN':
-                col.prop(md, "cutter_group")
-                if (md.cutter_group):
-                   col.prop(md, "keep_cutter_shards")
+            col.prop(md, "cutter_group")
+            if (md.cutter_group):
+                col.prop(md, "keep_cutter_shards")
+                col.label("Material Index Offset")
+                row = col.row(align=True)
+                row.prop(md, "material_offset_intersect", text="Intersect")
+                row.prop(md, "material_offset_difference", text="Difference")
             col.prop(md, "use_particle_birth_coordinates")
 
             box.prop(md, "percentage")
@@ -148,6 +167,9 @@ class PHYSICS_PT_fracture(PhysicButtonsPanel, Panel):
             box.prop_search(md, "ground_vertex_group", ob, "vertex_groups", text = "")
             box.label("Inner Vertex Group:")
             box.prop_search(md, "inner_vertex_group", ob, "vertex_groups", text = "")
+            box.prop(md, "inner_crease")
+            if (md.frac_algorithm in {'BISECT_FAST', 'BISECT_FAST_FILL'}):
+                box.prop(md, "orthogonality_factor", text="Rectangular Alignment")
 
         layout.context_pointer_set("modifier", md)
         row = layout.row()
@@ -171,6 +193,8 @@ class PHYSICS_PT_fracture_simulation(PhysicButtonsPanel, Panel):
         row = layout.row()
         row.prop(md, "use_constraints")
         row.prop(md, "use_breaking")
+        row = layout.row();
+        row.prop(md, "use_constraint_collision")
         row.prop(md, "use_compounds")
         layout.prop(md, "constraint_target")
         col = layout.column(align=True)
@@ -218,13 +242,33 @@ class PHYSICS_PT_fracture_simulation(PhysicButtonsPanel, Panel):
             col.prop(md, "cluster_solver_iterations_override")
             layout.prop(md, "use_mass_dependent_thresholds")
 
+        if not md.use_compounds:
+            layout.label("Constraint Deform Settings")
+            col = layout.column(align=True)
+            row = col.row(align=True)
+            row.prop(md, "deform_angle", text="Deforming Angle")
+            row.prop(md, "cluster_deform_angle", text="Cluster Deforming Angle")
+
+            row = col.row(align=True)
+            row.prop(md, "deform_distance", text="Deforming Distance")
+            row.prop(md, "cluster_deform_distance", text="Cluster Deforming Distance")
+
+            row = col.row(align=True)
+            row.prop(md, "deform_angle_weighted")
+            row.prop(md, "deform_distance_weighted")
+
+            col.prop(md, "deform_weakening")
+
+
+
+
 class PHYSICS_PT_fracture_utilities(PhysicButtonsPanel, Panel):
     bl_label = "Fracture Utilities"
 
     @classmethod
     def poll(cls, context):
         md = context.fracture
-        return PhysicButtonsPanel.poll(context) and md.fracture_mode != 'EXTERNAL'
+        return PhysicButtonsPanel.poll(context) # and md.fracture_mode != 'EXTERNAL'
 
     def draw(self, context):
         layout = self.layout
@@ -234,12 +278,26 @@ class PHYSICS_PT_fracture_utilities(PhysicButtonsPanel, Panel):
         col.prop(md, "autohide_dist")
         col.prop(md, "automerge_dist")
         row = layout.row()
+        row.prop(md, "keep_distort")
+        row.prop(md, "do_merge")
+        row = layout.row()
         row.prop(md, "fix_normals")
         row.prop(md, "nor_range")
 
-        layout.context_pointer_set("modifier", md)
-        layout.operator("object.rigidbody_convert_to_objects", text = "Convert To Objects")
-        layout.operator("object.rigidbody_convert_to_keyframes", text = "Convert To Keyframed Objects")
+        col = layout.column(align=True)
+        col.context_pointer_set("modifier", md)
+        col.operator("object.rigidbody_convert_to_objects", text = "Convert To Objects")
+        col.operator("object.rigidbody_convert_to_keyframes", text = "Convert To Keyframed Objects")
+
+classes = (
+    FRACTURE_MT_presets,
+    FRACTURE_UL_fracture_settings,
+    PHYSICS_PT_fracture,
+    PHYSICS_PT_fracture_simulation,
+    PHYSICS_PT_fracture_utilities,
+)
 
 if __name__ == "__main__":  # only for live edit.
-    bpy.utils.register_module(__name__)
+    from bpy.utils import register_class
+    for cls in classes:
+        register_class(cls)

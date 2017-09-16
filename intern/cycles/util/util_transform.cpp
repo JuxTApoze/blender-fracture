@@ -46,10 +46,10 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "util_transform.h"
+#include "util/util_transform.h"
 
-#include "util_boundbox.h"
-#include "util_math.h"
+#include "util/util_boundbox.h"
+#include "util/util_math.h"
 
 CCL_NAMESPACE_BEGIN
 
@@ -158,7 +158,7 @@ Transform transform_inverse(const Transform& tfm)
 
 float4 transform_to_quat(const Transform& tfm)
 {
-	double trace = tfm[0][0] + tfm[1][1] + tfm[2][2];
+	double trace = (double)(tfm[0][0] + tfm[1][1] + tfm[2][2]);
 	float4 qt;
 
 	if(trace > 0.0) {

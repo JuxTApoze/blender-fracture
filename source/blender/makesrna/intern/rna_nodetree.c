@@ -64,6 +64,8 @@
 
 #include "RE_render_ext.h"
 
+#include "NOD_composite.h"
+
 EnumPropertyItem rna_enum_node_socket_in_out_items[] = {
 	{ SOCK_IN, "IN", 0, "Input", "" },
 	{ SOCK_OUT, "OUT", 0, "Output", "" },
@@ -236,10 +238,10 @@ bNodeTreeType *rna_node_tree_type_from_enum(int value)
 
 EnumPropertyItem *rna_node_tree_type_itemf(void *data, int (*poll)(void *data, bNodeTreeType *), bool *r_free)
 {
-	EnumPropertyItem tmp = {0, "", 0, "", ""};
+	EnumPropertyItem tmp = {0};
 	EnumPropertyItem *item = NULL;
 	int totitem = 0, i = 0;
-	
+
 	NODE_TREE_TYPES_BEGIN (nt)
 	{
 		if (poll && !poll(data, nt)) {
@@ -259,9 +261,14 @@ EnumPropertyItem *rna_node_tree_type_itemf(void *data, int (*poll)(void *data, b
 	}
 	NODE_TREE_TYPES_END;
 
+	if (totitem == 0) {
+		*r_free = false;
+		return DummyRNA_NULL_items;
+	}
+
 	RNA_enum_item_end(&item, &totitem);
 	*r_free = true;
-	
+
 	return item;
 }
 
@@ -308,9 +315,9 @@ bNodeType *rna_node_type_from_enum(int value)
 EnumPropertyItem *rna_node_type_itemf(void *data, int (*poll)(void *data, bNodeType *), bool *r_free)
 {
 	EnumPropertyItem *item = NULL;
-	EnumPropertyItem tmp = {0, "", 0, "", ""};
+	EnumPropertyItem tmp = {0};
 	int totitem = 0, i = 0;
-	
+
 	NODE_TYPES_BEGIN(ntype)
 		if (poll && !poll(data, ntype)) {
 			++i;
@@ -327,9 +334,15 @@ EnumPropertyItem *rna_node_type_itemf(void *data, int (*poll)(void *data, bNodeT
 		
 		++i;
 	NODE_TYPES_END
+
+	if (totitem == 0) {
+		*r_free = false;
+		return DummyRNA_NULL_items;
+	}
+
 	RNA_enum_item_end(&item, &totitem);
 	*r_free = true;
-	
+
 	return item;
 }
 
@@ -376,10 +389,10 @@ bNodeSocketType *rna_node_socket_type_from_enum(int value)
 EnumPropertyItem *rna_node_socket_type_itemf(void *data, int (*poll)(void *data, bNodeSocketType *), bool *r_free)
 {
 	EnumPropertyItem *item = NULL;
-	EnumPropertyItem tmp = {0, "", 0, "", ""};
+	EnumPropertyItem tmp = {0};
 	int totitem = 0, i = 0;
 	StructRNA *srna;
-	
+
 	NODE_SOCKET_TYPES_BEGIN(stype)
 		if (poll && !poll(data, stype)) {
 			++i;
@@ -397,9 +410,15 @@ EnumPropertyItem *rna_node_socket_type_itemf(void *data, int (*poll)(void *data,
 		
 		++i;
 	NODE_SOCKET_TYPES_END
+
+	if (totitem == 0) {
+		*r_free = false;
+		return DummyRNA_NULL_items;
+	}
+
 	RNA_enum_item_end(&item, &totitem);
 	*r_free = true;
-	
+
 	return item;
 }
 
@@ -408,25 +427,25 @@ static EnumPropertyItem *rna_node_static_type_itemf(bContext *UNUSED(C), Pointer
 	EnumPropertyItem *item = NULL;
 	EnumPropertyItem tmp;
 	int totitem = 0;
-	
+
 	/* hack, don't want to add include path to RNA just for this, since in the future RNA types
 	 * for nodes should be defined locally at runtime anyway ...
 	 */
-	
+
 	tmp.value = NODE_CUSTOM;
 	tmp.identifier = "CUSTOM";
 	tmp.name = "Custom";
 	tmp.description = "Custom Node";
 	tmp.icon = ICON_NONE;
 	RNA_enum_item_add(&item, &totitem, &tmp);
-	
+
 	tmp.value = NODE_UNDEFINED;
 	tmp.identifier = "UNDEFINED";
 	tmp.name = "UNDEFINED";
 	tmp.description = "";
 	tmp.icon = ICON_NONE;
 	RNA_enum_item_add(&item, &totitem, &tmp);
-	
+
 #define DefNode(Category, ID, DefFunc, EnumName, StructName, UIName, UIDesc) \
 	if (STREQ(#Category, "Node")) { \
 		tmp.value = ID; \
@@ -438,7 +457,7 @@ static EnumPropertyItem *rna_node_static_type_itemf(bContext *UNUSED(C), Pointer
 	}
 #include "../../nodes/NOD_static_types.h"
 #undef DefNode
-	
+
 	if (RNA_struct_is_a(ptr->type, &RNA_ShaderNode)) {
 #define DefNode(Category, ID, DefFunc, EnumName, StructName, UIName, UIDesc) \
 		if (STREQ(#Category, "ShaderNode")) { \
@@ -466,7 +485,7 @@ static EnumPropertyItem *rna_node_static_type_itemf(bContext *UNUSED(C), Pointer
 #include "../../nodes/NOD_static_types.h"
 #undef DefNode
 	}
-	
+
 	if (RNA_struct_is_a(ptr->type, &RNA_TextureNode)) {
 #define DefNode(Category, ID, DefFunc, EnumName, StructName, UIName, UIDesc) \
 		if (STREQ(#Category, "TextureNode")) { \
@@ -483,7 +502,7 @@ static EnumPropertyItem *rna_node_static_type_itemf(bContext *UNUSED(C), Pointer
 
 	RNA_enum_item_end(&item, &totitem);
 	*r_free = true;
-	
+
 	return item;
 }
 
@@ -657,11 +676,12 @@ static bool rna_NodeTree_check(bNodeTree *ntree, ReportList *reports)
 static void rna_NodeTree_update(Main *bmain, Scene *UNUSED(scene), PointerRNA *ptr)
 {
 	bNodeTree *ntree = (bNodeTree *)ptr->id.data;
+	bNode *node = (bNode *)ptr->data;
 
 	WM_main_add_notifier(NC_NODE | NA_EDITED, NULL);
 	WM_main_add_notifier(NC_SCENE | ND_NODES, &ntree->id);
 
-	ED_node_tag_update_nodetree(bmain, ntree);
+	ED_node_tag_update_nodetree(bmain, ntree, node);
 }
 
 static bNode *rna_NodeTree_node_new(bNodeTree *ntree, bContext *C, ReportList *reports, const char *type)
@@ -802,6 +822,7 @@ static bNodeLink *rna_NodeTree_link_new(bNodeTree *ntree, ReportList *reports,
 
 		ntreeUpdateTree(G.main, ntree);
 
+		ED_node_tag_update_nodetree(G.main, ntree, ret->tonode);
 		WM_main_add_notifier(NC_NODE | NA_EDITED, ntree);
 	}
 	return ret;
@@ -1048,7 +1069,7 @@ static void rna_NodeTree_interface_update(bNodeTree *ntree, bContext *C)
 	ntree->update |= NTREE_UPDATE_GROUP;
 	ntreeUpdateTree(G.main, ntree);
 	
-	ED_node_tag_update_nodetree(CTX_data_main(C), ntree);
+	ED_node_tag_update_nodetree(CTX_data_main(C), ntree, NULL);
 }
 
 
@@ -1545,12 +1566,13 @@ static int rna_Node_parent_poll(PointerRNA *ptr, PointerRNA value)
 static void rna_Node_update(Main *bmain, Scene *UNUSED(scene), PointerRNA *ptr)
 {
 	bNodeTree *ntree = (bNodeTree *)ptr->id.data;
-	ED_node_tag_update_nodetree(bmain, ntree);
+	bNode *node = (bNode *)ptr->data;
+	ED_node_tag_update_nodetree(bmain, ntree, node);
 }
 
-static void rna_Node_socket_value_update(ID *id, bNode *UNUSED(node), bContext *C)
+static void rna_Node_socket_value_update(ID *id, bNode *node, bContext *C)
 {
-	ED_node_tag_update_nodetree(CTX_data_main(C), (bNodeTree *)id);
+	ED_node_tag_update_nodetree(CTX_data_main(C), (bNodeTree *)id, node);
 }
 
 static void rna_Node_select_set(PointerRNA *ptr, int value)
@@ -1916,7 +1938,11 @@ static PointerRNA rna_NodeSocket_node_get(PointerRNA *ptr)
 static void rna_NodeSocket_update(Main *bmain, Scene *UNUSED(scene), PointerRNA *ptr)
 {
 	bNodeTree *ntree = (bNodeTree *)ptr->id.data;
-	ED_node_tag_update_nodetree(bmain, ntree);
+	bNodeSocket *sock = (bNodeSocket *)ptr->data;
+	bNode *node;
+	if (nodeFindNode(ntree, sock, &node, NULL)) {
+		ED_node_tag_update_nodetree(bmain, ntree, node);
+	}
 }
 
 static int rna_NodeSocket_is_output_get(PointerRNA *ptr)
@@ -2182,7 +2208,7 @@ static void rna_NodeSocketInterface_update(Main *bmain, Scene *UNUSED(scene), Po
 	ntree->update |= NTREE_UPDATE_GROUP;
 	ntreeUpdateTree(G.main, ntree);
 	
-	ED_node_tag_update_nodetree(bmain, ntree);
+	ED_node_tag_update_nodetree(bmain, ntree, NULL);
 }
 
 
@@ -2438,8 +2464,9 @@ static void rna_CompositorNode_tag_need_exec(bNode *node)
 static void rna_Node_tex_image_update(Main *bmain, Scene *UNUSED(scene), PointerRNA *ptr)
 {
 	bNodeTree *ntree = (bNodeTree *)ptr->id.data;
+	bNode *node = (bNode *)ptr->data;
 
-	ED_node_tag_update_nodetree(bmain, ntree);
+	ED_node_tag_update_nodetree(bmain, ntree, node);
 	WM_main_add_notifier(NC_IMAGE, NULL);
 }
 
@@ -2451,7 +2478,7 @@ static void rna_Node_material_update(Main *bmain, Scene *UNUSED(scene), PointerR
 	if (node->id)
 		nodeSetActive(ntree, node);
 
-	ED_node_tag_update_nodetree(bmain, ntree);
+	ED_node_tag_update_nodetree(bmain, ntree, node);
 }
 
 static void rna_NodeGroup_update(Main *bmain, Scene *UNUSED(scene), PointerRNA *ptr)
@@ -2462,7 +2489,7 @@ static void rna_NodeGroup_update(Main *bmain, Scene *UNUSED(scene), PointerRNA *
 	if (node->id)
 		ntreeUpdateTree(bmain, (bNodeTree *)node->id);
 	
-	ED_node_tag_update_nodetree(bmain, ntree);
+	ED_node_tag_update_nodetree(bmain, ntree, node);
 }
 
 static void rna_NodeGroup_node_tree_set(PointerRNA *ptr, const PointerRNA value)
@@ -2598,14 +2625,18 @@ static void rna_Node_image_layer_update(Main *bmain, Scene *scene, PointerRNA *p
 	BKE_image_signal(ima, iuser, IMA_SIGNAL_SRC_CHANGE);
 	
 	rna_Node_update(bmain, scene, ptr);
+
+	if (scene->nodetree != NULL) {
+		ntreeCompositUpdateRLayers(scene->nodetree);
+	}
 }
 
 static EnumPropertyItem *renderresult_layers_add_enum(RenderLayer *rl)
 {
 	EnumPropertyItem *item = NULL;
-	EnumPropertyItem tmp = {0, "", 0, "", ""};
+	EnumPropertyItem tmp = {0};
 	int i = 0, totitem = 0;
-	
+
 	while (rl) {
 		tmp.identifier = rl->name;
 		/* little trick: using space char instead empty string makes the item selectable in the dropdown */
@@ -2617,7 +2648,7 @@ static EnumPropertyItem *renderresult_layers_add_enum(RenderLayer *rl)
 		RNA_enum_item_add(&item, &totitem, &tmp);
 		rl = rl->next;
 	}
-	
+
 	RNA_enum_item_end(&item, &totitem);
 
 	return item;
@@ -2630,18 +2661,17 @@ static EnumPropertyItem *rna_Node_image_layer_itemf(bContext *UNUSED(C), Pointer
 	Image *ima = (Image *)node->id;
 	EnumPropertyItem *item = NULL;
 	RenderLayer *rl;
-	
-	if (ima && ima->rr) {
-		rl = ima->rr->layers.first;
-		item = renderresult_layers_add_enum(rl);
+
+	if (ima == NULL || ima->rr == NULL) {
+		*r_free = false;
+		return DummyRNA_NULL_items;
 	}
-	else {
-		int totitem = 0;
-		RNA_enum_item_end(&item, &totitem);
-	}
-	
+
+	rl = ima->rr->layers.first;
+	item = renderresult_layers_add_enum(rl);
+
 	*r_free = true;
-	
+
 	return item;
 }
 
@@ -2692,19 +2722,22 @@ static EnumPropertyItem *renderresult_views_add_enum(RenderView *rv)
 }
 
 static EnumPropertyItem *rna_Node_image_view_itemf(bContext *UNUSED(C), PointerRNA *ptr,
-                                                   PropertyRNA *UNUSED(prop), bool *free)
+                                                   PropertyRNA *UNUSED(prop), bool *r_free)
 {
 	bNode *node = (bNode *)ptr->data;
 	Image *ima = (Image *)node->id;
 	EnumPropertyItem *item = NULL;
 	RenderView *rv;
 
-	if (!ima || !(ima->rr)) return NULL;
+	if (ima == NULL || ima->rr == NULL) {
+		*r_free = false;
+		return DummyRNA_NULL_items;
+	}
 
 	rv = ima->rr->views.first;
 	item = renderresult_views_add_enum(rv);
 
-	*free = true;
+	*r_free = true;
 
 	return item;
 }
@@ -2716,19 +2749,26 @@ static EnumPropertyItem *rna_Node_scene_layer_itemf(bContext *UNUSED(C), Pointer
 	Scene *sce = (Scene *)node->id;
 	EnumPropertyItem *item = NULL;
 	RenderLayer *rl;
-	
-	if (sce) {
-		rl = sce->r.layers.first;
-		item = renderresult_layers_add_enum(rl);
+
+	if (sce == NULL) {
+		*r_free = false;
+		return DummyRNA_NULL_items;
 	}
-	else {
-		int totitem = 0;
-		RNA_enum_item_end(&item, &totitem);
-	}
-	
+
+	rl = sce->r.layers.first;
+	item = renderresult_layers_add_enum(rl);
+
 	*r_free = true;
-	
+
 	return item;
+}
+
+static void rna_Node_scene_layer_update(Main *bmain, Scene *scene, PointerRNA *ptr)
+{
+	rna_Node_update(bmain, scene, ptr);
+	if (scene->nodetree != NULL) {
+		ntreeCompositUpdateRLayers(scene->nodetree);
+	}
 }
 
 static EnumPropertyItem *rna_Node_channel_itemf(bContext *UNUSED(C), PointerRNA *ptr,
@@ -2736,7 +2776,7 @@ static EnumPropertyItem *rna_Node_channel_itemf(bContext *UNUSED(C), PointerRNA 
 {
 	bNode *node = (bNode *)ptr->data;
 	EnumPropertyItem *item = NULL;
-	EnumPropertyItem tmp = {0, "", 0, "", ""};
+	EnumPropertyItem tmp = {0};
 	int totitem = 0;
 	
 	switch (node->custom1) {
@@ -2773,7 +2813,7 @@ static EnumPropertyItem *rna_Node_channel_itemf(bContext *UNUSED(C), PointerRNA 
 			RNA_enum_item_add(&item, &totitem, &tmp);
 			break;
 		default:
-			break;
+			return DummyRNA_NULL_items;
 	}
 
 	RNA_enum_item_end(&item, &totitem);
@@ -2972,7 +3012,16 @@ static void rna_ShaderNodeScript_update(Main *bmain, Scene *scene, PointerRNA *p
 		RE_engine_free(engine);
 	}
 
-	ED_node_tag_update_nodetree(bmain, ntree);
+	ED_node_tag_update_nodetree(bmain, ntree, node);
+}
+
+static void rna_ShaderNodePrincipled_update(Main *bmain, Scene *scene, PointerRNA *ptr)
+{
+	bNodeTree *ntree = (bNodeTree *)ptr->id.data;
+	bNode *node = (bNode *)ptr->data;
+
+	nodeUpdate(ntree, node);
+	rna_Node_update(bmain, scene, ptr);
 }
 
 static void rna_ShaderNodeSubsurface_update(Main *bmain, Scene *scene, PointerRNA *ptr)
@@ -3023,12 +3072,30 @@ static void rna_ShaderNodePointDensity_psys_set(PointerRNA *ptr, PointerRNA valu
 	}
 }
 
-static int point_density_color_source_from_shader(NodeShaderTexPointDensity *shader_point_density)
+static int point_density_particle_color_source_from_shader(NodeShaderTexPointDensity *shader_point_density)
 {
 	switch (shader_point_density->color_source) {
-		case SHD_POINTDENSITY_COLOR_PARTAGE: return TEX_PD_COLOR_PARTAGE;
-		case SHD_POINTDENSITY_COLOR_PARTSPEED: return TEX_PD_COLOR_PARTSPEED;
-		case SHD_POINTDENSITY_COLOR_PARTVEL: return TEX_PD_COLOR_PARTVEL;
+		case SHD_POINTDENSITY_COLOR_PARTAGE:
+			return TEX_PD_COLOR_PARTAGE;
+		case SHD_POINTDENSITY_COLOR_PARTSPEED:
+			return TEX_PD_COLOR_PARTSPEED;
+		case SHD_POINTDENSITY_COLOR_PARTVEL:
+			return TEX_PD_COLOR_PARTVEL;
+		default:
+			BLI_assert(!"Unknown color source");
+			return TEX_PD_COLOR_CONSTANT;
+	}
+}
+
+static int point_density_vertex_color_source_from_shader(NodeShaderTexPointDensity *shader_point_density)
+{
+	switch (shader_point_density->ob_color_source) {
+		case SHD_POINTDENSITY_COLOR_VERTCOL:
+			return TEX_PD_COLOR_VERTCOL;
+		case SHD_POINTDENSITY_COLOR_VERTWEIGHT:
+			return TEX_PD_COLOR_VERTWEIGHT;
+		case SHD_POINTDENSITY_COLOR_VERTNOR:
+			return TEX_PD_COLOR_VERTNOR;
 		default:
 			BLI_assert(!"Unknown color source");
 			return TEX_PD_COLOR_CONSTANT;
@@ -3057,13 +3124,20 @@ void rna_ShaderNodePointDensity_density_cache(bNode *self,
 		pd->source = TEX_PD_PSYS;
 		pd->psys = shader_point_density->particle_system;
 		pd->psys_cache_space = TEX_PD_OBJECTSPACE;
+		pd->color_source = point_density_particle_color_source_from_shader(shader_point_density);
 	}
 	else {
 		BLI_assert(shader_point_density->point_source == SHD_POINTDENSITY_SOURCE_OBJECT);
 		pd->source = TEX_PD_OBJECT;
 		pd->ob_cache_space = TEX_PD_OBJECTSPACE;
+		pd->ob_color_source = point_density_vertex_color_source_from_shader(shader_point_density);
+		BLI_strncpy(pd->vertex_attribute_name,
+		            shader_point_density->vertex_attribute_name,
+		            sizeof(pd->vertex_attribute_name));
 	}
-	pd->color_source = point_density_color_source_from_shader(shader_point_density);
+
+	/* Store resolution, so it can be changed in the UI. */
+	shader_point_density->cached_resolution = shader_point_density->resolution;
 
 	/* Single-threaded sampling of the voxel domain. */
 	RE_point_density_cache(scene,
@@ -3079,15 +3153,15 @@ void rna_ShaderNodePointDensity_density_calc(bNode *self,
 {
 	NodeShaderTexPointDensity *shader_point_density = self->storage;
 	PointDensity *pd = &shader_point_density->pd;
+	const int resolution = shader_point_density->cached_resolution;
 
 	if (scene == NULL) {
 		*length = 0;
 		return;
 	}
 
-	*length = 4 * shader_point_density->resolution *
-	              shader_point_density->resolution *
-	              shader_point_density->resolution;
+	/* TODO(sergey): Will likely overflow, but how to pass size_t via RNA? */
+	*length = 4 * resolution * resolution * resolution;
 
 	if (*values == NULL) {
 		*values = MEM_mallocN(sizeof(float) * (*length), "point density dynamic array");
@@ -3095,13 +3169,14 @@ void rna_ShaderNodePointDensity_density_calc(bNode *self,
 
 	/* Single-threaded sampling of the voxel domain. */
 	RE_point_density_sample(scene, pd,
-	                        shader_point_density->resolution,
+	                        resolution,
 	                        settings == 1,
 	                        *values);
 
 	/* We're done, time to clean up. */
 	BKE_texture_pointdensity_free_data(pd);
 	memset(pd, 0, sizeof(*pd));
+	shader_point_density->cached_resolution = 0.0f;
 }
 
 void rna_ShaderNodePointDensity_density_minmax(bNode *self,
@@ -3163,17 +3238,27 @@ static EnumPropertyItem node_glossy_items[] = {
 	{SHD_GLOSSY_BECKMANN,          "BECKMANN",          0, "Beckmann", ""},
 	{SHD_GLOSSY_GGX,               "GGX",               0, "GGX",      ""},
 	{SHD_GLOSSY_ASHIKHMIN_SHIRLEY, "ASHIKHMIN_SHIRLEY", 0, "Ashikhmin-Shirley", ""},
+	{SHD_GLOSSY_MULTI_GGX,         "MULTI_GGX",         0, "Multiscatter GGX", ""},
 	{0, NULL, 0, NULL, NULL}
 };
 
 static EnumPropertyItem node_anisotropic_items[] = {
 	{SHD_GLOSSY_BECKMANN,          "BECKMANN",          0, "Beckmann", ""},
 	{SHD_GLOSSY_GGX,               "GGX",               0, "GGX",      ""},
+	{SHD_GLOSSY_MULTI_GGX,         "MULTI_GGX",         0, "Multiscatter GGX", ""},
 	{SHD_GLOSSY_ASHIKHMIN_SHIRLEY, "ASHIKHMIN_SHIRLEY", 0, "Ashikhmin-Shirley", ""},
 	{0, NULL, 0, NULL, NULL}
 };
 
 static EnumPropertyItem node_glass_items[] = {
+	{SHD_GLOSSY_SHARP,             "SHARP",             0, "Sharp",    ""},
+	{SHD_GLOSSY_BECKMANN,          "BECKMANN",          0, "Beckmann", ""},
+	{SHD_GLOSSY_GGX,               "GGX",               0, "GGX",      ""},
+	{SHD_GLOSSY_MULTI_GGX,         "MULTI_GGX",         0, "Multiscatter GGX", ""},
+	{0, NULL, 0, NULL, NULL}
+};
+
+static EnumPropertyItem node_refraction_items[] = {
 	{SHD_GLOSSY_SHARP,             "SHARP",             0, "Sharp",    ""},
 	{SHD_GLOSSY_BECKMANN,          "BECKMANN",          0, "Beckmann", ""},
 	{SHD_GLOSSY_GGX,               "GGX",               0, "GGX",      ""},
@@ -3196,6 +3281,12 @@ static EnumPropertyItem node_script_mode_items[] = {
 	{NODE_SCRIPT_INTERNAL, "INTERNAL", 0, "Internal", "Use internal text data-block"},
 	{NODE_SCRIPT_EXTERNAL, "EXTERNAL", 0, "External", "Use external .osl or .oso file"},
 	{0, NULL, 0, NULL, NULL}
+};
+
+static EnumPropertyItem node_principled_distribution_items[] = {
+	{ SHD_GLOSSY_GGX, "GGX", 0, "GGX", "" },
+	{ SHD_GLOSSY_MULTI_GGX, "MULTI_GGX", 0, "Multiscatter GGX", "" },
+	{ 0, NULL, 0, NULL, NULL }
 };
 
 /* -- Common nodes ---------------------------------------------------------- */
@@ -3266,11 +3357,12 @@ static void def_frame(StructRNA *srna)
 	prop = RNA_def_property(srna, "text", PROP_POINTER, PROP_NONE);
 	RNA_def_property_pointer_sdna(prop, NULL, "id");
 	RNA_def_property_struct_type(prop, "Text");
-	RNA_def_property_flag(prop, PROP_EDITABLE);
+	RNA_def_property_flag(prop, PROP_EDITABLE | PROP_ID_REFCOUNT);
 	RNA_def_property_ui_text(prop, "Text", "");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 
 	RNA_def_struct_sdna_from(srna, "NodeFrame", "storage");
+	RNA_def_struct_translation_context(srna, BLT_I18NCONTEXT_ID_NODETREE);
 	
 	prop = RNA_def_property(srna, "shrink", PROP_BOOLEAN, PROP_NONE);
 	RNA_def_property_boolean_sdna(prop, NULL, "flag", NODE_FRAME_SHRINK);
@@ -3535,7 +3627,7 @@ static void def_sh_lamp(StructRNA *srna)
 	prop = RNA_def_property(srna, "lamp_object", PROP_POINTER, PROP_NONE);
 	RNA_def_property_pointer_sdna(prop, NULL, "id");
 	RNA_def_property_struct_type(prop, "Object");
-	RNA_def_property_flag(prop, PROP_EDITABLE);
+	RNA_def_property_flag(prop, PROP_EDITABLE | PROP_ID_REFCOUNT);
 	RNA_def_property_pointer_funcs(prop, NULL, NULL, NULL, "rna_Lamp_object_poll");
 	RNA_def_property_ui_text(prop, "Lamp Object", "");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
@@ -3909,7 +4001,7 @@ static void def_sh_tex_coord(StructRNA *srna)
 	prop = RNA_def_property(srna, "object", PROP_POINTER, PROP_NONE);
 	RNA_def_property_pointer_sdna(prop, NULL, "id");
 	RNA_def_property_struct_type(prop, "Object");
-	RNA_def_property_flag(prop, PROP_EDITABLE);
+	RNA_def_property_flag(prop, PROP_EDITABLE | PROP_ID_REFCOUNT);
 	RNA_def_property_ui_text(prop, "Object", "Use coordinates from this object (for object texture coordinates output)");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 
@@ -3969,7 +4061,9 @@ static void def_sh_tex_wireframe(StructRNA *srna)
 static void def_sh_tex_pointdensity(StructRNA *srna)
 {
 	PropertyRNA *prop;
+
 	FunctionRNA *func;
+	PropertyRNA *parm;
 
 	static EnumPropertyItem point_source_items[] = {
 		{SHD_POINTDENSITY_SOURCE_PSYS, "PARTICLE_SYSTEM", 0, "Particle System",
@@ -3995,13 +4089,21 @@ static void def_sh_tex_pointdensity(StructRNA *srna)
 		{0, NULL, 0, NULL, NULL}
 	};
 
-	static EnumPropertyItem color_source_items[] = {
+	static EnumPropertyItem particle_color_source_items[] = {
 		{SHD_POINTDENSITY_COLOR_PARTAGE, "PARTICLE_AGE", 0, "Particle Age",
 		                                 "Lifetime mapped as 0.0 - 1.0 intensity"},
 		{SHD_POINTDENSITY_COLOR_PARTSPEED, "PARTICLE_SPEED", 0, "Particle Speed",
 		                                   "Particle speed (absolute magnitude of velocity) mapped as 0.0-1.0 intensity"},
 		{SHD_POINTDENSITY_COLOR_PARTVEL, "PARTICLE_VELOCITY", 0, "Particle Velocity",
 		                                 "XYZ velocity mapped to RGB colors"},
+		{0, NULL, 0, NULL, NULL}
+	};
+
+	static EnumPropertyItem vertex_color_source_items[] = {
+	    {SHD_POINTDENSITY_COLOR_VERTCOL, "VERTEX_COLOR", 0, "Vertex Color", "Vertex color layer"},
+	    {SHD_POINTDENSITY_COLOR_VERTWEIGHT, "VERTEX_WEIGHT", 0, "Vertex Weight", "Vertex group weight"},
+	    {SHD_POINTDENSITY_COLOR_VERTNOR, "VERTEX_NORMAL", 0, "Vertex Normal",
+	                                     "XYZ normal vector mapped to RGB colors"},
 		{0, NULL, 0, NULL, NULL}
 	};
 
@@ -4015,7 +4117,7 @@ static void def_sh_tex_pointdensity(StructRNA *srna)
 	prop = RNA_def_property(srna, "object", PROP_POINTER, PROP_NONE);
 	RNA_def_property_pointer_sdna(prop, NULL, "id");
 	RNA_def_property_struct_type(prop, "Object");
-	RNA_def_property_flag(prop, PROP_EDITABLE);
+	RNA_def_property_flag(prop, PROP_EDITABLE | PROP_ID_REFCOUNT);
 	RNA_def_property_ui_text(prop, "Object", "Object to take point data from");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 
@@ -4055,11 +4157,21 @@ static void def_sh_tex_pointdensity(StructRNA *srna)
 	RNA_def_property_ui_text(prop, "Interpolation", "Texture interpolation");
 	RNA_def_property_update(prop, 0, "rna_Node_update");
 
-	prop = RNA_def_property(srna, "color_source", PROP_ENUM, PROP_NONE);
+	prop = RNA_def_property(srna, "particle_color_source", PROP_ENUM, PROP_NONE);
 	RNA_def_property_enum_sdna(prop, NULL, "color_source");
-	RNA_def_property_enum_items(prop, color_source_items);
+	RNA_def_property_enum_items(prop, particle_color_source_items);
 	RNA_def_property_ui_text(prop, "Color Source", "Data to derive color results from");
 	RNA_def_property_update(prop, 0, "rna_Node_update");
+
+	prop = RNA_def_property(srna, "vertex_color_source", PROP_ENUM, PROP_NONE);
+	RNA_def_property_enum_sdna(prop, NULL, "ob_color_source");
+	RNA_def_property_enum_items(prop, vertex_color_source_items);
+	RNA_def_property_ui_text(prop, "Color Source", "Data to derive color results from");
+	RNA_def_property_update(prop, 0, "rna_Node_update");
+
+	prop = RNA_def_property(srna, "vertex_attribute_name", PROP_STRING, PROP_NONE);
+	RNA_def_property_ui_text(prop, "Vertex Attribute Name", "Vertex attribute to use for color");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 
 	func = RNA_def_function(srna, "cache_point_density", "rna_ShaderNodePointDensity_density_cache");
 	RNA_def_function_ui_description(func, "Cache point density data for later calculation");
@@ -4071,22 +4183,22 @@ static void def_sh_tex_pointdensity(StructRNA *srna)
 	RNA_def_pointer(func, "scene", "Scene", "", "");
 	RNA_def_enum(func, "settings", calc_mode_items, 1, "", "Calculate density for rendering");
 	/* TODO, See how array size of 0 works, this shouldnt be used. */
-	prop = RNA_def_float_array(func, "rgba_values", 1, NULL, 0, 0, "", "RGBA Values", 0, 0);
-	RNA_def_property_flag(prop, PROP_DYNAMIC);
-	RNA_def_function_output(func, prop);
+	parm = RNA_def_float_array(func, "rgba_values", 1, NULL, 0, 0, "", "RGBA Values", 0, 0);
+	RNA_def_parameter_flags(parm, PROP_DYNAMIC, 0);
+	RNA_def_function_output(func, parm);
 
 	func = RNA_def_function(srna, "calc_point_density_minmax", "rna_ShaderNodePointDensity_density_minmax");
 	RNA_def_function_ui_description(func, "Calculate point density");
 	RNA_def_pointer(func, "scene", "Scene", "", "");
 	RNA_def_enum(func, "settings", calc_mode_items, 1, "", "Calculate density for rendering");
-	prop = RNA_def_property(func, "min", PROP_FLOAT, PROP_COORDS);
-	RNA_def_property_array(prop, 3);
-	RNA_def_property_flag(prop, PROP_THICK_WRAP);
-	RNA_def_function_output(func, prop);
-	prop = RNA_def_property(func, "max", PROP_FLOAT, PROP_COORDS);
-	RNA_def_property_array(prop, 3);
-	RNA_def_property_flag(prop, PROP_THICK_WRAP);
-	RNA_def_function_output(func, prop);
+	parm = RNA_def_property(func, "min", PROP_FLOAT, PROP_COORDS);
+	RNA_def_property_array(parm, 3);
+	RNA_def_parameter_flags(parm, PROP_THICK_WRAP, 0);
+	RNA_def_function_output(func, parm);
+	parm = RNA_def_property(func, "max", PROP_FLOAT, PROP_COORDS);
+	RNA_def_property_array(parm, 3);
+	RNA_def_parameter_flags(parm, PROP_THICK_WRAP, 0);
+	RNA_def_function_output(func, parm);
 }
 
 static void def_glossy(StructRNA *srna)
@@ -4107,6 +4219,28 @@ static void def_glass(StructRNA *srna)
 	prop = RNA_def_property(srna, "distribution", PROP_ENUM, PROP_NONE);
 	RNA_def_property_enum_sdna(prop, NULL, "custom1");
 	RNA_def_property_enum_items(prop, node_glass_items);
+	RNA_def_property_ui_text(prop, "Distribution", "");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
+}
+
+static void def_principled(StructRNA *srna)
+{
+	PropertyRNA *prop;
+
+	prop = RNA_def_property(srna, "distribution", PROP_ENUM, PROP_NONE);
+	RNA_def_property_enum_sdna(prop, NULL, "custom1");
+	RNA_def_property_enum_items(prop, node_principled_distribution_items);
+	RNA_def_property_ui_text(prop, "Distribution", "");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_ShaderNodePrincipled_update");
+}
+
+static void def_refraction(StructRNA *srna)
+{
+	PropertyRNA *prop;
+	
+	prop = RNA_def_property(srna, "distribution", PROP_ENUM, PROP_NONE);
+	RNA_def_property_enum_sdna(prop, NULL, "custom1");
+	RNA_def_property_enum_items(prop, node_refraction_items);
 	RNA_def_property_ui_text(prop, "Distribution", "");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 }
@@ -4311,7 +4445,7 @@ static void def_sh_script(StructRNA *srna)
 	func = RNA_def_function(srna, "find_socket", "rna_ShaderNodeScript_find_socket");
 	RNA_def_function_ui_description(func, "Find a socket by name");
 	parm = RNA_def_string(func, "name", NULL, 0, "Socket name", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	/*parm =*/ RNA_def_boolean(func, "is_output", false, "Output", "Whether the socket is an output");
 	parm = RNA_def_pointer(func, "result", "NodeSocket", "", "");
 	RNA_def_function_return(func, parm);
@@ -4320,9 +4454,9 @@ static void def_sh_script(StructRNA *srna)
 	RNA_def_function_ui_description(func, "Add a socket socket");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID);
 	parm = RNA_def_string(func, "name", NULL, 0, "Name", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	parm = RNA_def_enum(func, "type", node_socket_type_items, SOCK_FLOAT, "Type", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	/*parm =*/ RNA_def_boolean(func, "is_output", false, "Output", "Whether the socket is an output");
 	parm = RNA_def_pointer(func, "result", "NodeSocket", "", "");
 	RNA_def_function_return(func, parm);
@@ -4331,7 +4465,7 @@ static void def_sh_script(StructRNA *srna)
 	RNA_def_function_ui_description(func, "Remove a socket socket");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID);
 	parm = RNA_def_pointer(func, "sock", "NodeSocket", "Socket", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 #endif
 }
 
@@ -4353,31 +4487,6 @@ static void def_cmp_alpha_over(StructRNA *srna)
 	RNA_def_property_float_sdna(prop, NULL, "x");
 	RNA_def_property_range(prop, 0.0f, 1.0f);
 	RNA_def_property_ui_text(prop, "Premul", "Mix Factor");
-	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
-}
-
-static void def_cmp_hue_saturation(StructRNA *srna)
-{
-	PropertyRNA *prop;
-
-	RNA_def_struct_sdna_from(srna, "NodeHueSat", "storage");
-	
-	prop = RNA_def_property(srna, "color_hue", PROP_FLOAT, PROP_NONE);
-	RNA_def_property_float_sdna(prop, NULL, "hue");
-	RNA_def_property_range(prop, 0.0f, 1.0f);
-	RNA_def_property_ui_text(prop, "Hue", "");
-	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
-	
-	prop = RNA_def_property(srna, "color_saturation", PROP_FLOAT, PROP_NONE);
-	RNA_def_property_float_sdna(prop, NULL, "sat");
-	RNA_def_property_range(prop, 0.0f, 2.0f);
-	RNA_def_property_ui_text(prop, "Saturation", "");
-	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
-	
-	prop = RNA_def_property(srna, "color_value", PROP_FLOAT, PROP_NONE);
-	RNA_def_property_float_sdna(prop, NULL, "val");
-	RNA_def_property_range(prop, 0.0f, 2.0f);
-	RNA_def_property_ui_text(prop, "Value", "");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 }
 
@@ -4705,9 +4814,9 @@ static void def_cmp_render_layers(StructRNA *srna)
 	RNA_def_property_pointer_sdna(prop, NULL, "id");
 	RNA_def_property_pointer_funcs(prop, NULL, "rna_Node_scene_set", NULL, NULL);
 	RNA_def_property_struct_type(prop, "Scene");
-	RNA_def_property_flag(prop, PROP_EDITABLE);
+	RNA_def_property_flag(prop, PROP_EDITABLE | PROP_ID_REFCOUNT);
 	RNA_def_property_ui_text(prop, "Scene", "");
-	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_scene_layer_update");
 	
 	prop = RNA_def_property(srna, "layer", PROP_ENUM, PROP_NONE);
 	RNA_def_property_enum_sdna(prop, NULL, "custom1");
@@ -4715,7 +4824,7 @@ static void def_cmp_render_layers(StructRNA *srna)
 	RNA_def_property_enum_funcs(prop, NULL, NULL, "rna_Node_scene_layer_itemf");
 	RNA_def_property_flag(prop, PROP_ENUM_NO_TRANSLATE);
 	RNA_def_property_ui_text(prop, "Layer", "");
-	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_scene_layer_update");
 }
 
 static void rna_def_cmp_output_file_slot_file(BlenderRNA *brna)
@@ -4773,7 +4882,7 @@ static void rna_def_cmp_output_file_slots_api(BlenderRNA *brna, PropertyRNA *cpr
 	RNA_def_function_ui_description(func, "Add a file slot to this node");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID | FUNC_USE_REPORTS | FUNC_USE_CONTEXT);
 	parm = RNA_def_string(func, "name", NULL, MAX_NAME, "Name", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	/* return value */
 	parm = RNA_def_pointer(func, "socket", "NodeSocket", "", "New socket");
 	RNA_def_function_return(func, parm);
@@ -4786,7 +4895,7 @@ static void rna_def_cmp_output_file_slots_api(BlenderRNA *brna, PropertyRNA *cpr
 	RNA_def_function_ui_description(func, "Remove a file slot from this node");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID | FUNC_USE_REPORTS);
 	parm = RNA_def_pointer(func, "socket", "NodeSocket", "", "The socket to remove");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 
 	func = RNA_def_function(srna, "clear", "rna_Node_inputs_clear");
 	RNA_def_function_ui_description(func, "Remove all file slots from this node");
@@ -4796,9 +4905,9 @@ static void rna_def_cmp_output_file_slots_api(BlenderRNA *brna, PropertyRNA *cpr
 	RNA_def_function_ui_description(func, "Move a file slot to another position");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID);
 	parm = RNA_def_int(func, "from_index", -1, 0, INT_MAX, "From Index", "Index of the socket to move", 0, 10000);
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	parm = RNA_def_int(func, "to_index", -1, 0, INT_MAX, "To Index", "Target index for the socket", 0, 10000);
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 }
 static void def_cmp_output_file(BlenderRNA *brna, StructRNA *srna)
 {
@@ -5148,6 +5257,16 @@ static void def_cmp_luma_matte(StructRNA *srna)
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 }
 
+static void def_cmp_brightcontrast(StructRNA *srna)
+{
+	PropertyRNA *prop;
+
+	prop = RNA_def_property(srna, "use_premultiply", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_sdna(prop, NULL, "custom1", 1);
+	RNA_def_property_ui_text(prop, "Convert Premul", "Keep output image premultiplied alpha");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
+}
+
 static void def_cmp_chroma_matte(StructRNA *srna)
 {
 	PropertyRNA *prop;
@@ -5310,13 +5429,13 @@ static void def_cmp_double_edge_mask(StructRNA *srna)
 	};
 
 	prop = RNA_def_property(srna, "inner_mode", PROP_ENUM, PROP_NONE);
-	RNA_def_property_enum_sdna(prop, NULL, "custom2");
+	RNA_def_property_enum_sdna(prop, NULL, "custom1");
 	RNA_def_property_enum_items(prop, InnerEdgeMode_items);
 	RNA_def_property_ui_text(prop, "Inner Edge Mode", "");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 
 	prop = RNA_def_property(srna, "edge_mode", PROP_ENUM, PROP_NONE);
-	RNA_def_property_enum_sdna(prop, NULL, "custom1");
+	RNA_def_property_enum_sdna(prop, NULL, "custom2");
 	RNA_def_property_enum_items(prop, BufEdgeMode_items);
 	RNA_def_property_ui_text(prop, "Buffer Edge Mode", "");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
@@ -5352,7 +5471,7 @@ static void def_cmp_defocus(StructRNA *srna)
 	RNA_def_property_pointer_sdna(prop, NULL, "id");
 	RNA_def_property_pointer_funcs(prop, NULL, "rna_Node_scene_set", NULL, NULL);
 	RNA_def_property_struct_type(prop, "Scene");
-	RNA_def_property_flag(prop, PROP_EDITABLE);
+	RNA_def_property_flag(prop, PROP_EDITABLE | PROP_ID_REFCOUNT);
 	RNA_def_property_ui_text(prop, "Scene", "Scene from which to select the active camera (render scene if undefined)");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 
@@ -5659,8 +5778,8 @@ static void def_cmp_glare(StructRNA *srna)
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 	
 	prop = RNA_def_property(srna, "streaks", PROP_INT, PROP_NONE);
-	RNA_def_property_int_sdna(prop, NULL, "angle");
-	RNA_def_property_range(prop, 2, 16);
+	RNA_def_property_int_sdna(prop, NULL, "streaks");
+	RNA_def_property_range(prop, 1, 16);
 	RNA_def_property_ui_text(prop, "Streaks", "Total number of streaks");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 	
@@ -5677,7 +5796,7 @@ static void def_cmp_glare(StructRNA *srna)
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 	
 	prop = RNA_def_property(srna, "use_rotate_45", PROP_BOOLEAN, PROP_NONE);
-	RNA_def_property_boolean_sdna(prop, NULL, "angle", 0);
+	RNA_def_property_boolean_sdna(prop, NULL, "star_45", 0);
 	RNA_def_property_ui_text(prop, "Rotate 45", "Simple star filter: add 45 degree rotation offset");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 	
@@ -5844,6 +5963,12 @@ static void def_cmp_colorbalance(StructRNA *srna)
 	RNA_def_property_range(prop, 0.f, FLT_MAX);
 	RNA_def_property_ui_range(prop, 0, 2, 0.1, 3);
 	RNA_def_property_ui_text(prop, "Slope", "Correction for Highlights");
+	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_NodeColorBalance_update_cdl");
+
+	prop = RNA_def_property(srna, "offset_basis", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_range(prop,  -FLT_MAX, FLT_MAX);
+	RNA_def_property_ui_range(prop, -1.0, 1.0, 1.0, 2);
+	RNA_def_property_ui_text(prop, "Basis", "Support negative color by using this as the RGB basis");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_NodeColorBalance_update_cdl");
 }
 
@@ -6213,14 +6338,8 @@ static void def_cmp_switch(StructRNA *srna)
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 }
 
-static void def_cmp_switch_view(StructRNA *srna)
+static void def_cmp_switch_view(StructRNA *UNUSED(srna))
 {
-	PropertyRNA *prop;
-
-	prop = RNA_def_property(srna, "check", PROP_BOOLEAN, PROP_NONE);
-	RNA_def_property_boolean_sdna(prop, NULL, "custom1", 0);
-	RNA_def_property_ui_text(prop, "Switch", "Off: first socket, On: second socket");
-	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 }
 
 static void def_cmp_colorcorrection(StructRNA *srna)
@@ -6611,7 +6730,8 @@ static void def_cmp_translate(StructRNA *srna)
 
 	prop = RNA_def_property(srna, "use_relative", PROP_BOOLEAN, PROP_NONE);
 	RNA_def_property_boolean_sdna(prop, NULL, "relative", 1);
-	RNA_def_property_ui_text(prop, "Relative", "Use relative (percent) values to define blur radius");
+	RNA_def_property_ui_text(prop, "Relative",
+	                         "Use relative (fraction of input image size) values to define translation");
 	RNA_def_property_update(prop, NC_NODE | NA_EDITED, "rna_Node_update");
 
 	prop = RNA_def_property(srna, "wrap_axis", PROP_ENUM, PROP_NONE);
@@ -6877,29 +6997,29 @@ static void rna_def_node_socket(BlenderRNA *brna)
 	RNA_def_function_ui_description(func, "Draw socket");
 	RNA_def_function_flag(func, FUNC_REGISTER);
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_property(func, "layout", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "UILayout");
 	RNA_def_property_ui_text(parm, "Layout", "Layout in the UI");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_property(func, "node", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "Node");
 	RNA_def_property_ui_text(parm, "Node", "Node the socket belongs to");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL | PROP_RNAPTR);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED | PARM_RNAPTR);
 	parm = RNA_def_property(func, "text", PROP_STRING, PROP_NONE);
 	RNA_def_property_ui_text(parm, "Text", "Text label to draw alongside properties");
 	// RNA_def_property_string_default(parm, "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 
 	func = RNA_def_function(srna, "draw_color", NULL);
 	RNA_def_function_ui_description(func, "Color of the socket icon");
 	RNA_def_function_flag(func, FUNC_REGISTER);
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_property(func, "node", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "Node");
 	RNA_def_property_ui_text(parm, "Node", "Node the socket belongs to");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL | PROP_RNAPTR);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED | PARM_RNAPTR);
 	parm = RNA_def_float_array(func, "color", 4, default_draw_color, 0.0f, 1.0f, "Color", "", 0.0f, 1.0f);
 	RNA_def_function_output(func, parm);
 }
@@ -6950,17 +7070,17 @@ static void rna_def_node_socket_interface(BlenderRNA *brna)
 	RNA_def_function_ui_description(func, "Draw template settings");
 	RNA_def_function_flag(func, FUNC_REGISTER_OPTIONAL);
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_property(func, "layout", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "UILayout");
 	RNA_def_property_ui_text(parm, "Layout", "Layout in the UI");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 
 	func = RNA_def_function(srna, "draw_color", NULL);
 	RNA_def_function_ui_description(func, "Color of the socket icon");
 	RNA_def_function_flag(func, FUNC_REGISTER);
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_float_array(func, "color", 4, default_draw_color, 0.0f, 1.0f, "Color", "", 0.0f, 1.0f);
 	RNA_def_function_output(func, parm);
 
@@ -6968,25 +7088,25 @@ static void rna_def_node_socket_interface(BlenderRNA *brna)
 	RNA_def_function_ui_description(func, "Define RNA properties of a socket");
 	RNA_def_function_flag(func, FUNC_REGISTER_OPTIONAL | FUNC_ALLOW_WRITE);
 	parm = RNA_def_pointer(func, "data_rna_type", "Struct", "Data RNA Type", "RNA type for special socket properties");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 
 	func = RNA_def_function(srna, "init_socket", NULL);
 	RNA_def_function_ui_description(func, "Initialize a node socket instance");
 	RNA_def_function_flag(func, FUNC_REGISTER_OPTIONAL | FUNC_ALLOW_WRITE);
 	parm = RNA_def_pointer(func, "node", "Node", "Node", "Node of the socket to initialize");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL | PROP_RNAPTR);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED | PARM_RNAPTR);
 	parm = RNA_def_pointer(func, "socket", "NodeSocket", "Socket", "Socket to initialize");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL | PROP_RNAPTR);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED | PARM_RNAPTR);
 	parm = RNA_def_string(func, "data_path", NULL, 0, "Data Path", "Path to specialized socket data");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 
 	func = RNA_def_function(srna, "from_socket", NULL);
 	RNA_def_function_ui_description(func, "Setup template parameters from an existing socket");
 	RNA_def_function_flag(func, FUNC_REGISTER_OPTIONAL | FUNC_ALLOW_WRITE);
 	parm = RNA_def_pointer(func, "node", "Node", "Node", "Node of the original socket");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL | PROP_RNAPTR);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED | PARM_RNAPTR);
 	parm = RNA_def_pointer(func, "socket", "NodeSocket", "Socket", "Original socket");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL | PROP_RNAPTR);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED | PARM_RNAPTR);
 }
 
 static void rna_def_node_socket_float(BlenderRNA *brna, const char *idname, const char *interface_idname, PropertySubType subtype)
@@ -7321,29 +7441,29 @@ static void rna_def_node_socket_standard_types(BlenderRNA *brna)
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID);
 	RNA_def_function_ui_description(func, "Draw socket");
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_property(func, "layout", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "UILayout");
 	RNA_def_property_ui_text(parm, "Layout", "Layout in the UI");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_property(func, "node", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "Node");
 	RNA_def_property_ui_text(parm, "Node", "Node the socket belongs to");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL | PROP_RNAPTR);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED | PARM_RNAPTR);
 	parm = RNA_def_property(func, "text", PROP_STRING, PROP_NONE);
 	RNA_def_property_ui_text(parm, "Text", "Text label to draw alongside properties");
 	// RNA_def_property_string_default(parm, "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 
 	func = RNA_def_function(srna, "draw_color", "rna_NodeSocketStandard_draw_color");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID);
 	RNA_def_function_ui_description(func, "Color of the socket icon");
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_property(func, "node", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "Node");
 	RNA_def_property_ui_text(parm, "Node", "Node the socket belongs to");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL | PROP_RNAPTR);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED | PARM_RNAPTR);
 	parm = RNA_def_float_array(func, "color", 4, default_draw_color, 0.0f, 1.0f, "Color", "", 0.0f, 1.0f);
 	RNA_def_function_output(func, parm);
 	
@@ -7363,17 +7483,17 @@ static void rna_def_node_socket_standard_types(BlenderRNA *brna)
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID);
 	RNA_def_function_ui_description(func, "Draw template settings");
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_property(func, "layout", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "UILayout");
 	RNA_def_property_ui_text(parm, "Layout", "Layout in the UI");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 
 	func = RNA_def_function(srna, "draw_color", "rna_NodeSocketInterfaceStandard_draw_color");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID);
 	RNA_def_function_ui_description(func, "Color of the socket icon");
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_float_array(func, "color", 4, default_draw_color, 0.0f, 1.0f, "Color", "", 0.0f, 1.0f);
 	RNA_def_function_output(func, parm);
 
@@ -7455,13 +7575,13 @@ static void rna_def_internal_node(BlenderRNA *brna)
 	RNA_def_function_flag(func, FUNC_NO_SELF | FUNC_USE_SELF_TYPE);
 	RNA_def_function_return(func, RNA_def_boolean(func, "visible", false, "", ""));
 	parm = RNA_def_pointer(func, "node_tree", "NodeTree", "Node Tree", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	
 	func = RNA_def_function(srna, "poll_instance", "rna_NodeInternal_poll_instance");
 	RNA_def_function_ui_description(func, "If non-null output is returned, the node can be added to the tree");
 	RNA_def_function_return(func, RNA_def_boolean(func, "visible", false, "", ""));
 	parm = RNA_def_pointer(func, "node_tree", "NodeTree", "Node Tree", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	
 	/* update */
 	func = RNA_def_function(srna, "update", "rna_NodeInternal_update");
@@ -7473,22 +7593,22 @@ static void rna_def_internal_node(BlenderRNA *brna)
 	RNA_def_function_ui_description(func, "Draw node buttons");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID);
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_property(func, "layout", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "UILayout");
 	RNA_def_property_ui_text(parm, "Layout", "Layout in the UI");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 
 	/* draw buttons extended */
 	func = RNA_def_function(srna, "draw_buttons_ext", "rna_NodeInternal_draw_buttons_ext");
 	RNA_def_function_ui_description(func, "Draw node buttons in the sidebar");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID);
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_property(func, "layout", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "UILayout");
 	RNA_def_property_ui_text(parm, "Layout", "Layout in the UI");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 }
 
 static void rna_def_node_sockets_api(BlenderRNA *brna, PropertyRNA *cprop, int in_out)
@@ -7511,9 +7631,9 @@ static void rna_def_node_sockets_api(BlenderRNA *brna, PropertyRNA *cprop, int i
 	RNA_def_function_ui_description(func, "Add a socket to this node");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID | FUNC_USE_REPORTS);
 	parm = RNA_def_string(func, "type", NULL, MAX_NAME, "Type", "Data type");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	parm = RNA_def_string(func, "name", NULL, MAX_NAME, "Name", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	RNA_def_string(func, "identifier", NULL, MAX_NAME, "Identifier", "Unique socket identifier");
 	/* return value */
 	parm = RNA_def_pointer(func, "socket", "NodeSocket", "", "New socket");
@@ -7523,7 +7643,7 @@ static void rna_def_node_sockets_api(BlenderRNA *brna, PropertyRNA *cprop, int i
 	RNA_def_function_ui_description(func, "Remove a socket from this node");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID | FUNC_USE_REPORTS);
 	parm = RNA_def_pointer(func, "socket", "NodeSocket", "", "The socket to remove");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 
 	func = RNA_def_function(srna, "clear", clearfunc);
 	RNA_def_function_ui_description(func, "Remove all sockets from this node");
@@ -7533,9 +7653,9 @@ static void rna_def_node_sockets_api(BlenderRNA *brna, PropertyRNA *cprop, int i
 	RNA_def_function_ui_description(func, "Move a socket to another position");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID);
 	parm = RNA_def_int(func, "from_index", -1, 0, INT_MAX, "From Index", "Index of the socket to move", 0, 10000);
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	parm = RNA_def_int(func, "to_index", -1, 0, INT_MAX, "To Index", "Target index for the socket", 0, 10000);
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 }
 
 static void rna_def_node(BlenderRNA *brna)
@@ -7686,7 +7806,7 @@ static void rna_def_node(BlenderRNA *brna)
 	RNA_def_function_ui_description(func, "Update after property changes");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID);
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 
 	func = RNA_def_function(srna, "is_registered_node_type", "rna_Node_is_registered_node_type");
 	RNA_def_function_ui_description(func, "True if a registered node type");
@@ -7761,14 +7881,14 @@ static void rna_def_node(BlenderRNA *brna)
 	RNA_def_function_flag(func, FUNC_NO_SELF | FUNC_REGISTER);
 	RNA_def_function_return(func, RNA_def_boolean(func, "visible", false, "", ""));
 	parm = RNA_def_pointer(func, "node_tree", "NodeTree", "Node Tree", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	
 	func = RNA_def_function(srna, "poll_instance", NULL);
 	RNA_def_function_ui_description(func, "If non-null output is returned, the node can be added to the tree");
 	RNA_def_function_flag(func, FUNC_REGISTER_OPTIONAL);
 	RNA_def_function_return(func, RNA_def_boolean(func, "visible", false, "", ""));
 	parm = RNA_def_pointer(func, "node_tree", "NodeTree", "Node Tree", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	
 	/* update */
 	func = RNA_def_function(srna, "update", NULL);
@@ -7780,21 +7900,21 @@ static void rna_def_node(BlenderRNA *brna)
 	RNA_def_function_ui_description(func, "Handle creation of a link to or from the node");
 	RNA_def_function_flag(func, FUNC_USE_SELF_ID | FUNC_REGISTER_OPTIONAL | FUNC_ALLOW_WRITE);
 	parm = RNA_def_pointer(func, "link", "NodeLink", "Link", "Node link that will be inserted");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	
 	/* init */
 	func = RNA_def_function(srna, "init", NULL);
 	RNA_def_function_ui_description(func, "Initialize a new instance of this node");
 	RNA_def_function_flag(func, FUNC_REGISTER_OPTIONAL | FUNC_ALLOW_WRITE);
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 
 	/* copy */
 	func = RNA_def_function(srna, "copy", NULL);
 	RNA_def_function_ui_description(func, "Initialize a new instance of this node from an existing node");
 	RNA_def_function_flag(func, FUNC_REGISTER_OPTIONAL | FUNC_ALLOW_WRITE);
 	parm = RNA_def_pointer(func, "node", "Node", "Node", "Existing node to copy");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 
 	/* free */
 	func = RNA_def_function(srna, "free", NULL);
@@ -7806,29 +7926,29 @@ static void rna_def_node(BlenderRNA *brna)
 	RNA_def_function_ui_description(func, "Draw node buttons");
 	RNA_def_function_flag(func, FUNC_REGISTER_OPTIONAL);
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_property(func, "layout", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "UILayout");
 	RNA_def_property_ui_text(parm, "Layout", "Layout in the UI");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 
 	/* draw buttons extended */
 	func = RNA_def_function(srna, "draw_buttons_ext", NULL);
 	RNA_def_function_ui_description(func, "Draw node buttons in the sidebar");
 	RNA_def_function_flag(func, FUNC_REGISTER_OPTIONAL);
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_property(func, "layout", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "UILayout");
 	RNA_def_property_ui_text(parm, "Layout", "Layout in the UI");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 
 	/* dynamic label */
 	func = RNA_def_function(srna, "draw_label", NULL);
 	RNA_def_function_ui_description(func, "Returns a dynamic label string");
 	RNA_def_function_flag(func, FUNC_REGISTER_OPTIONAL);
 	parm = RNA_def_string(func, "label", NULL, MAX_NAME, "Label", "");
-	RNA_def_property_flag(parm, PROP_THICK_WRAP); /* needed for string return value */
+	RNA_def_parameter_flags(parm, PROP_THICK_WRAP, 0); /* needed for string return value */
 	RNA_def_function_output(func, parm);
 }
 
@@ -7895,7 +8015,7 @@ static void rna_def_nodetree_nodes_api(BlenderRNA *brna, PropertyRNA *cprop)
 	 * added this here to avoid frequent confusion with API changes from "type" to "bl_idname"
 	 */
 	parm = RNA_def_string(func, "type", NULL, MAX_NAME, "Type", "Type of node to add (Warning: should be same as node.bl_idname, not node.type!)");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	/* return value */
 	parm = RNA_def_pointer(func, "node", "Node", "", "New node");
 	RNA_def_function_return(func, parm);
@@ -7904,8 +8024,8 @@ static void rna_def_nodetree_nodes_api(BlenderRNA *brna, PropertyRNA *cprop)
 	RNA_def_function_ui_description(func, "Remove a node from this node tree");
 	RNA_def_function_flag(func, FUNC_USE_REPORTS);
 	parm = RNA_def_pointer(func, "node", "Node", "", "The node to remove");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL | PROP_RNAPTR);
-	RNA_def_property_clear_flag(parm, PROP_THICK_WRAP);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED | PARM_RNAPTR);
+	RNA_def_parameter_clear_flags(parm, PROP_THICK_WRAP, 0);
 
 	func = RNA_def_function(srna, "clear", "rna_NodeTree_node_clear");
 	RNA_def_function_ui_description(func, "Remove all nodes from this node tree");
@@ -7934,9 +8054,9 @@ static void rna_def_nodetree_link_api(BlenderRNA *brna, PropertyRNA *cprop)
 	RNA_def_function_ui_description(func, "Add a node link to this node tree");
 	RNA_def_function_flag(func, FUNC_USE_REPORTS);
 	parm = RNA_def_pointer(func, "input", "NodeSocket", "", "The input socket");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_pointer(func, "output", "NodeSocket", "", "The output socket");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	RNA_def_boolean(func, "verify_limits", true, "Verify Limits", "Remove existing links if connection limit is exceeded");
 	/* return */
 	parm = RNA_def_pointer(func, "link", "NodeLink", "", "New node link");
@@ -7946,8 +8066,8 @@ static void rna_def_nodetree_link_api(BlenderRNA *brna, PropertyRNA *cprop)
 	RNA_def_function_ui_description(func, "remove a node link from the node tree");
 	RNA_def_function_flag(func, FUNC_USE_REPORTS);
 	parm = RNA_def_pointer(func, "link", "NodeLink", "", "The node link to remove");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL | PROP_RNAPTR);
-	RNA_def_property_clear_flag(parm, PROP_THICK_WRAP);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED | PARM_RNAPTR);
+	RNA_def_parameter_clear_flags(parm, PROP_THICK_WRAP, 0);
 
 	func = RNA_def_function(srna, "clear", "rna_NodeTree_link_clear");
 	RNA_def_function_ui_description(func, "remove all node links from the node tree");
@@ -7974,9 +8094,9 @@ static void rna_def_node_tree_sockets_api(BlenderRNA *brna, PropertyRNA *cprop, 
 	RNA_def_function_ui_description(func, "Add a socket to this node tree");
 	RNA_def_function_flag(func, FUNC_USE_REPORTS);
 	parm = RNA_def_string(func, "type", NULL, MAX_NAME, "Type", "Data type");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	parm = RNA_def_string(func, "name", NULL, MAX_NAME, "Name", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	/* return value */
 	parm = RNA_def_pointer(func, "socket", "NodeSocketInterface", "", "New socket");
 	RNA_def_function_return(func, parm);
@@ -7985,7 +8105,7 @@ static void rna_def_node_tree_sockets_api(BlenderRNA *brna, PropertyRNA *cprop, 
 	RNA_def_function_ui_description(func, "Remove a socket from this node tree");
 	RNA_def_function_flag(func, FUNC_USE_REPORTS);
 	parm = RNA_def_pointer(func, "socket", "NodeSocketInterface", "", "The socket to remove");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 
 	func = RNA_def_function(srna, "clear", clearfunc);
 	RNA_def_function_ui_description(func, "Remove all sockets from this node tree");
@@ -7994,9 +8114,9 @@ static void rna_def_node_tree_sockets_api(BlenderRNA *brna, PropertyRNA *cprop, 
 	func = RNA_def_function(srna, "move", movefunc);
 	RNA_def_function_ui_description(func, "Move a socket to another position");
 	parm = RNA_def_int(func, "from_index", -1, 0, INT_MAX, "From Index", "Index of the socket to move", 0, 10000);
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	parm = RNA_def_int(func, "to_index", -1, 0, INT_MAX, "To Index", "Target index for the socket", 0, 10000);
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 }
 
 static void rna_def_nodetree(BlenderRNA *brna)
@@ -8084,7 +8204,7 @@ static void rna_def_nodetree(BlenderRNA *brna)
 	func = RNA_def_function(srna, "interface_update", "rna_NodeTree_interface_update");
 	RNA_def_function_ui_description(func, "Updated node group interface");
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 
 	/* registration */
 	prop = RNA_def_property(srna, "bl_idname", PROP_STRING, PROP_NONE);
@@ -8113,7 +8233,7 @@ static void rna_def_nodetree(BlenderRNA *brna)
 	RNA_def_function_ui_description(func, "Check visibility in the editor");
 	RNA_def_function_flag(func, FUNC_NO_SELF | FUNC_REGISTER_OPTIONAL);
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	RNA_def_function_return(func, RNA_def_boolean(func, "visible", false, "", ""));
 
 	/* update */
@@ -8126,12 +8246,12 @@ static void rna_def_nodetree(BlenderRNA *brna)
 	RNA_def_function_ui_description(func, "Get a node tree from the context");
 	RNA_def_function_flag(func, FUNC_NO_SELF | FUNC_REGISTER_OPTIONAL);
 	parm = RNA_def_pointer(func, "context", "Context", "", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED | PROP_NEVER_NULL);
+	RNA_def_parameter_flags(parm, PROP_NEVER_NULL, PARM_REQUIRED);
 	parm = RNA_def_pointer(func, "result_1", "NodeTree", "Node Tree", "Active node tree from context");
 	RNA_def_function_output(func, parm);
-	parm = RNA_def_pointer(func, "result_2", "ID", "Owner ID", "ID data block that owns the node tree");
+	parm = RNA_def_pointer(func, "result_2", "ID", "Owner ID", "ID data-block that owns the node tree");
 	RNA_def_function_output(func, parm);
-	parm = RNA_def_pointer(func, "result_3", "ID", "From ID", "Original ID data block selected from the context");
+	parm = RNA_def_pointer(func, "result_3", "ID", "From ID", "Original ID data-block selected from the context");
 	RNA_def_function_output(func, parm);
 }
 
@@ -8230,10 +8350,10 @@ static StructRNA *define_specific_node(BlenderRNA *brna, const char *struct_name
 	RNA_def_function_flag(func, FUNC_NO_SELF | FUNC_USE_SELF_TYPE);
 	parm = RNA_def_property(func, "index", PROP_INT, PROP_UNSIGNED);
 	RNA_def_property_ui_text(parm, "Index", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	parm = RNA_def_property(func, "result", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "NodeInternalSocketTemplate");
-	RNA_def_property_flag(parm, PROP_RNAPTR);
+	RNA_def_parameter_flags(parm, 0, PARM_RNAPTR);
 	RNA_def_function_return(func, parm);
 
 	func = RNA_def_function(srna, "output_template", "rna_NodeInternal_output_template");
@@ -8241,10 +8361,10 @@ static StructRNA *define_specific_node(BlenderRNA *brna, const char *struct_name
 	RNA_def_function_flag(func, FUNC_NO_SELF | FUNC_USE_SELF_TYPE);
 	parm = RNA_def_property(func, "index", PROP_INT, PROP_UNSIGNED);
 	RNA_def_property_ui_text(parm, "Index", "");
-	RNA_def_property_flag(parm, PROP_REQUIRED);
+	RNA_def_parameter_flags(parm, 0, PARM_REQUIRED);
 	parm = RNA_def_property(func, "result", PROP_POINTER, PROP_NONE);
 	RNA_def_property_struct_type(parm, "NodeInternalSocketTemplate");
-	RNA_def_property_flag(parm, PROP_RNAPTR);
+	RNA_def_parameter_flags(parm, 0, PARM_RNAPTR);
 	RNA_def_function_return(func, parm);
 
 	if (def_func)

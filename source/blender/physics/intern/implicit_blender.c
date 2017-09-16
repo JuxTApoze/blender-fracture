@@ -1579,15 +1579,17 @@ BLI_INLINE void apply_spring(Implicit_Data *data, int i, int j, const float f[3]
 }
 
 bool BPH_mass_spring_force_spring_linear(Implicit_Data *data, int i, int j, float restlen,
-                                         float stiffness, float damping, bool no_compress, float clamp_force,
-                                         float r_f[3], float r_dfdx[3][3], float r_dfdv[3][3])
+                                         float stiffness, float damping, bool no_compress, float clamp_force)
 {
 	float extent[3], length, dir[3], vel[3];
 	
 	// calculate elonglation
 	spring_length(data, i, j, extent, dir, &length, vel);
-	
-	if (length > restlen || no_compress) {
+
+	/* This code computes not only the force, but also its derivative.
+	   Zero derivative effectively disables the spring for the implicit solver.
+	   Thus length > restlen makes cloth unconstrained at the start of simulation. */
+	if ((length >= restlen && length > 0) || no_compress) {
 		float stretch_force, f[3], dfdx[3][3], dfdv[3][3];
 		
 		stretch_force = stiffness * (length - restlen);
@@ -1605,25 +1607,15 @@ bool BPH_mass_spring_force_spring_linear(Implicit_Data *data, int i, int j, floa
 		
 		apply_spring(data, i, j, f, dfdx, dfdv);
 		
-		if (r_f) copy_v3_v3(r_f, f);
-		if (r_dfdx) copy_m3_m3(r_dfdx, dfdx);
-		if (r_dfdv) copy_m3_m3(r_dfdv, dfdv);
-		
 		return true;
 	}
 	else {
-		if (r_f) zero_v3(r_f);
-		if (r_dfdx) zero_m3(r_dfdx);
-		if (r_dfdv) zero_m3(r_dfdv);
-		
 		return false;
 	}
 }
 
 /* See "Stable but Responsive Cloth" (Choi, Ko 2005) */
-bool BPH_mass_spring_force_spring_bending(Implicit_Data *data, int i, int j, float restlen,
-                                          float kb, float cb,
-                                          float r_f[3], float r_dfdx[3][3], float r_dfdv[3][3])
+bool BPH_mass_spring_force_spring_bending(Implicit_Data *data, int i, int j, float restlen, float kb, float cb)
 {
 	float extent[3], length, dir[3], vel[3];
 	
@@ -1643,17 +1635,9 @@ bool BPH_mass_spring_force_spring_bending(Implicit_Data *data, int i, int j, flo
 		
 		apply_spring(data, i, j, f, dfdx, dfdv);
 		
-		if (r_f) copy_v3_v3(r_f, f);
-		if (r_dfdx) copy_m3_m3(r_dfdx, dfdx);
-		if (r_dfdv) copy_m3_m3(r_dfdv, dfdv);
-		
 		return true;
 	}
 	else {
-		if (r_f) zero_v3(r_f);
-		if (r_dfdx) zero_m3(r_dfdx);
-		if (r_dfdv) zero_m3(r_dfdv);
-		
 		return false;
 	}
 }
@@ -1942,8 +1926,7 @@ bool BPH_mass_spring_force_spring_bending_angular(Implicit_Data *data, int i, in
 }
 
 bool BPH_mass_spring_force_spring_goal(Implicit_Data *data, int i, const float goal_x[3], const float goal_v[3],
-                                       float stiffness, float damping,
-                                       float r_f[3], float r_dfdx[3][3], float r_dfdv[3][3])
+                                       float stiffness, float damping)
 {
 	float root_goal_x[3], root_goal_v[3], extent[3], length, dir[3], vel[3];
 	float f[3], dfdx[3][3], dfdv[3][3];
@@ -1970,17 +1953,9 @@ bool BPH_mass_spring_force_spring_goal(Implicit_Data *data, int i, const float g
 		add_m3_m3m3(data->dFdX[i].m, data->dFdX[i].m, dfdx);
 		add_m3_m3m3(data->dFdV[i].m, data->dFdV[i].m, dfdv);
 		
-		if (r_f) copy_v3_v3(r_f, f);
-		if (r_dfdx) copy_m3_m3(r_dfdx, dfdx);
-		if (r_dfdv) copy_m3_m3(r_dfdv, dfdv);
-		
 		return true;
 	}
 	else {
-		if (r_f) zero_v3(r_f);
-		if (r_dfdx) zero_m3(r_dfdx);
-		if (r_dfdv) zero_m3(r_dfdv);
-		
 		return false;
 	}
 }

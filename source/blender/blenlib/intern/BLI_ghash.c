@@ -69,7 +69,7 @@ const unsigned int hashsizes[] = {
 
 /**
  * \note Max load #GHASH_LIMIT_GROW used to be 3. (pre 2.74).
- * Python uses 0.6666, tommyhaslib even goes down to 0.5.
+ * Python uses 0.6666, tommyhashlib even goes down to 0.5.
  * Reducing our from 3 to 0.75 gives huge speedup (about twice quicker pure GHash insertions/lookup,
  * about 25% - 30% quicker 'dynamic-topology' stroke drawing e.g.).
  * Min load #GHASH_LIMIT_SHRINK is a quarter of max load, to avoid resizing to quickly.
@@ -116,6 +116,12 @@ struct GHash {
 };
 
 
+/* -------------------------------------------------------------------- */
+/* GHash API */
+
+/** \name Internal Utility API
+ * \{ */
+
 BLI_INLINE void ghash_entry_copy(
         GHash *gh_dst, Entry *dst, GHash *gh_src, Entry *src,
         GHashKeyCopyFP keycopyfp, GHashValCopyFP valcopyfp)
@@ -131,12 +137,6 @@ BLI_INLINE void ghash_entry_copy(
 		}
 	}
 }
-
-/* -------------------------------------------------------------------- */
-/* GHash API */
-
-/** \name Internal Utility API
- * \{ */
 
 /**
  * Get the full hash for a key.
@@ -1225,6 +1225,11 @@ bool BLI_ghashutil_intcmp(const void *a, const void *b)
 	return (a != b);
 }
 
+size_t BLI_ghashutil_combine_hash(size_t hash_a, size_t hash_b)
+{
+	return hash_a ^ (hash_b + 0x9e3779b9 + (hash_a << 6) + (hash_a >> 2));
+}
+
 /**
  * This function implements the widely used "djb" hash apparently posted
  * by Daniel Bernstein to comp.lang.c some time ago.  The 32 bit
@@ -1392,6 +1397,30 @@ void BLI_gset_insert(GSet *gs, void *key)
 bool BLI_gset_add(GSet *gs, void *key)
 {
 	return ghash_insert_safe_keyonly((GHash *)gs, key, false, NULL);
+}
+
+/**
+ * Set counterpart to #BLI_ghash_ensure_p_ex.
+ * similar to BLI_gset_add, except it returns the key pointer.
+ *
+ * \warning Caller _must_ write to \a r_key when returning false.
+ */
+bool BLI_gset_ensure_p_ex(GSet *gs, const void *key, void ***r_key)
+{
+	const unsigned int hash = ghash_keyhash((GHash *)gs, key);
+	const unsigned int bucket_index = ghash_bucket_index((GHash *)gs, hash);
+	GSetEntry *e = (GSetEntry *)ghash_lookup_entry_ex((GHash *)gs, key, bucket_index);
+	const bool haskey = (e != NULL);
+
+	if (!haskey) {
+		/* pass 'key' incase we resize */
+		e = BLI_mempool_alloc(((GHash *)gs)->entrypool);
+		ghash_insert_ex_keyonly_entry((GHash *)gs, (void *)key, bucket_index, (Entry *)e);
+		e->key = NULL;  /* caller must re-assign */
+	}
+
+	*r_key = &e->key;
+	return haskey;
 }
 
 /**
@@ -1564,7 +1593,7 @@ double BLI_ghash_calc_quality_ex(
 
 	if (r_variance) {
 		/* We already know our mean (i.e. load factor), easy to compute variance.
-		 * See http://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Two-pass_algorithm
+		 * See https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Two-pass_algorithm
 		 */
 		double sum = 0.0;
 		for (i = 0; i < gh->nbuckets; i++) {

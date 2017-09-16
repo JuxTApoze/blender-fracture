@@ -39,7 +39,7 @@ __all__ = (
     "is_py",
     "cmake_advanced_info",
     "cmake_compiler_defines",
-    "project_name_get"
+    "project_name_get",
     "init",
 )
 
@@ -84,10 +84,8 @@ def init(cmake_path):
 
 def source_list(path, filename_check=None):
     for dirpath, dirnames, filenames in os.walk(path):
-
-        # skip '.svn'
-        if dirpath.startswith("."):
-            continue
+        # skip '.git'
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
 
         for filename in filenames:
             filepath = join(dirpath, filename)
@@ -145,7 +143,7 @@ def cmake_advanced_info():
     def create_eclipse_project():
         print("CMAKE_DIR %r" % CMAKE_DIR)
         if sys.platform == "win32":
-            cmd = 'cmake "%s" -G"Eclipse CDT4 - MinGW Makefiles"' % CMAKE_DIR
+            raise Exception("Error: win32 is not supported")
         else:
             if make_exe_basename.startswith(("make", "gmake")):
                 cmd = 'cmake "%s" -G"Eclipse CDT4 - Unix Makefiles"' % CMAKE_DIR
@@ -214,7 +212,12 @@ def cmake_advanced_info():
 
 def cmake_cache_var(var):
     cache_file = open(join(CMAKE_DIR, "CMakeCache.txt"), encoding='utf-8')
-    lines = [l_strip for l in cache_file for l_strip in (l.strip(),) if l_strip if not l_strip.startswith("//") if not l_strip.startswith("#")]
+    lines = [
+        l_strip for l in cache_file
+        for l_strip in (l.strip(),)
+        if l_strip
+        if not l_strip.startswith(("//", "#"))
+    ]
     cache_file.close()
 
     for l in lines:

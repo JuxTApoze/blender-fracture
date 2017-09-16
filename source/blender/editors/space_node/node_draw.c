@@ -153,18 +153,27 @@ void ED_node_tag_update_id(ID *id)
 	}
 }
 
-void ED_node_tag_update_nodetree(Main *bmain, bNodeTree *ntree)
+void ED_node_tag_update_nodetree(Main *bmain, bNodeTree *ntree, bNode *node)
 {
 	if (!ntree)
 		return;
-	
+
+	bool do_tag_update = true;
+	if (node != NULL) {
+		if (!node_connected_to_output(ntree, node)) {
+			do_tag_update = false;
+		}
+	}
+
 	/* look through all datablocks, to support groups */
-	FOREACH_NODETREE(bmain, tntree, id) {
-		/* check if nodetree uses the group */
-		if (ntreeHasTree(tntree, ntree))
-			ED_node_tag_update_id(id);
-	} FOREACH_NODETREE_END
-	
+	if (do_tag_update) {
+		FOREACH_NODETREE(bmain, tntree, id) {
+			/* check if nodetree uses the group */
+			if (ntreeHasTree(tntree, ntree))
+				ED_node_tag_update_id(id);
+		} FOREACH_NODETREE_END
+	}
+
 	if (ntree->type == NTREE_TEXTURE)
 		ntreeTexCheckCyclics(ntree);
 }
@@ -811,14 +820,6 @@ static void node_draw_basis(const bContext *C, ARegion *ar, SpaceNode *snode, bN
 		UI_ThemeColorBlend(color_id, TH_REDALERT, 0.5f);
 	
 
-#ifdef WITH_COMPOSITOR
-	if (ntree->type == NTREE_COMPOSIT && (snode->flag & SNODE_SHOW_HIGHLIGHT)) {
-		if (COM_isHighlightedbNode(node)) {
-			UI_ThemeColorBlend(color_id, TH_ACTIVE, 0.5f);
-		}
-	}
-#endif
-
 	glLineWidth(1.0f);
 
 	UI_draw_roundbox_corner_set(UI_CNR_TOP_LEFT | UI_CNR_TOP_RIGHT);
@@ -980,16 +981,6 @@ static void node_draw_hidden(const bContext *C, ARegion *ar, SpaceNode *snode, b
 	if (node->flag & NODE_MUTED)
 		UI_ThemeColorBlend(color_id, TH_REDALERT, 0.5f);
 
-#ifdef WITH_COMPOSITOR
-	if (ntree->type == NTREE_COMPOSIT && (snode->flag & SNODE_SHOW_HIGHLIGHT)) {
-		if (COM_isHighlightedbNode(node)) {
-			UI_ThemeColorBlend(color_id, TH_ACTIVE, 0.5f);
-		}
-	}
-#else
-	(void)ntree;
-#endif
-	
 	UI_draw_roundbox(rct->xmin, rct->ymin, rct->xmax, rct->ymax, hiddenrad);
 	
 	/* outline active and selected emphasis */
@@ -1057,7 +1048,7 @@ static void node_draw_hidden(const bContext *C, ARegion *ar, SpaceNode *snode, b
 		//	BLI_snprintf(showname, sizeof(showname), "[%s]", showname); /* XXX - don't print into self! */
 
 		uiDefBut(node->block, UI_BTYPE_LABEL, 0, showname,
-		         (int)(rct->xmin + (NODE_MARGIN_X)), (int)(centy - 10),
+		         iroundf(rct->xmin + NODE_MARGIN_X), iroundf(centy - NODE_DY * 0.5f),
 		         (short)(BLI_rctf_size_x(rct) - 18.0f - 12.0f), (short)NODE_DY,
 		         NULL, 0, 0, 0, 0, "");
 	}
@@ -1244,15 +1235,9 @@ static void snode_setup_v2d(SpaceNode *snode, ARegion *ar, const float center[2]
 static void draw_nodetree(const bContext *C, ARegion *ar, bNodeTree *ntree, bNodeInstanceKey parent_key)
 {
 	SpaceNode *snode = CTX_wm_space_node(C);
-	
+
 	node_uiblocks_init(C, ntree);
-	
-#ifdef WITH_COMPOSITOR
-	if (ntree->type == NTREE_COMPOSIT) {
-		COM_startReadHighlights();
-	}
-#endif
-	
+
 	node_update_nodetree(C, ntree);
 	node_draw_nodetree(C, ar, snode, ntree, parent_key);
 }
@@ -1318,8 +1303,10 @@ void drawnodespace(const bContext *C, ARegion *ar)
 		path = snode->treepath.last;
 		
 		/* update tree path name (drawn in the bottom left) */
-		if (snode->id && UNLIKELY(!STREQ(path->node_name, snode->id->name + 2))) {
-			BLI_strncpy(path->node_name, snode->id->name + 2, sizeof(path->node_name));
+		ID *name_id = (path->nodetree && path->nodetree != snode->nodetree) ? &path->nodetree->id : snode->id;
+
+		if (name_id && UNLIKELY(!STREQ(path->node_name, name_id->name + 2))) {
+			BLI_strncpy(path->node_name, name_id->name + 2, sizeof(path->node_name));
 		}
 		
 		/* current View2D center, will be set temporarily for parent node trees */

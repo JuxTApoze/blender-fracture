@@ -115,7 +115,7 @@ typedef struct ClothVertex {
 	float 	mass;		/* mass / weight of the vertex		*/
 	float 	goal;		/* goal, from SB			*/
 	float	impulse[3];	/* used in collision.c */
-	float	*xrest;		/* temporary valid for building springs */
+	float	xrest[3];   /* rest position of the vertex */
 	unsigned int impulse_count; /* same as above */
 	float 	avg_spring_len; /* average length of connected springs */
 	float 	struct_stiff;
@@ -136,9 +136,6 @@ typedef struct ClothSpring {
 	float	restlen;	/* The original length of the spring.	*/
 	int	type;		/* types defined in BKE_cloth.h ("springType") */
 	int	flags; 		/* defined in BKE_cloth.h, e.g. deactivated due to tearing */
-	float dfdx[3][3];
-	float dfdv[3][3];
-	float f[3];
 	float 	stiffness;	/* stiffness factor from the vertex groups */
 	float editrestlen;
 	
@@ -171,6 +168,7 @@ typedef enum {
 	CLOTH_SIMSETTINGS_FLAG_CCACHE_EDIT = (1 << 12),	/* edit cache in editmode */
 	CLOTH_SIMSETTINGS_FLAG_NO_SPRING_COMPRESS = (1 << 13), /* don't allow spring compression */
 	CLOTH_SIMSETTINGS_FLAG_SEW = (1 << 14), /* pull ends of loose edges together */
+	CLOTH_SIMSETTINGS_FLAG_DYNAMIC_BASEMESH = (1 << 15), /* make simulation respect deformations in the base object */
 } CLOTH_SIMSETTINGS_FLAGS;
 
 /* COLLISION FLAGS */
@@ -238,9 +236,6 @@ void bvhselftree_update_from_cloth(struct ClothModifierData *clmd, bool moving);
 
 // needed for button_object.c
 void cloth_clear_cache (struct Object *ob, struct ClothModifierData *clmd, float framenr );
-
-// needed for cloth.c
-int cloth_add_spring (struct ClothModifierData *clmd, unsigned int indexA, unsigned int indexB, float restlength, int spring_type);
 
 void cloth_parallel_transport_hair_frame(float mat[3][3], const float dir_old[3], const float dir_new[3]);
 

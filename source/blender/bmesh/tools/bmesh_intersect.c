@@ -53,6 +53,8 @@
 #include "BLI_buffer.h"
 
 #include "bmesh.h"
+#include "intern/bmesh_private.h"
+
 #include "bmesh_intersect.h"  /* own include */
 
 #include "tools/bmesh_edgesplit.h"
@@ -84,6 +86,8 @@
 #ifdef USE_BOOLEAN_RAYCAST_DRAW
 /* insert bl_debug_draw_quad_clear... here */
 #endif
+
+// #define USE_DUMP
 
 static void tri_v3_scale(
         float v1[3], float v2[3], float v3[3],
@@ -148,7 +152,7 @@ struct ISectState {
  */
 struct LinkBase {
 	LinkNode    *list;
-	unsigned int list_len;
+	uint list_len;
 };
 
 static bool ghash_insert_link(
@@ -189,7 +193,7 @@ struct vert_sort_t {
 static void edge_verts_sort(const float co[3], struct LinkBase *v_ls_base)
 {
 	/* not optimal but list will be typically < 5 */
-	unsigned int i;
+	uint i;
 	struct vert_sort_t *vert_sort = BLI_array_alloca(vert_sort, v_ls_base->list_len);
 	LinkNode *node;
 
@@ -242,8 +246,8 @@ static void face_edges_split(
         bool use_island_connect,
         MemArena *mem_arena_edgenet)
 {
-	unsigned int i;
-	unsigned int edge_arr_len = e_ls_base->list_len;
+	uint i;
+	uint edge_arr_len = e_ls_base->list_len;
 	BMEdge **edge_arr = BLI_array_alloca(edge_arr, edge_arr_len);
 	LinkNode *node;
 	BLI_assert(f->head.htype == BM_FACE);
@@ -259,7 +263,7 @@ static void face_edges_split(
 
 #ifdef USE_NET_ISLAND_CONNECT
 	if (use_island_connect) {
-		unsigned int edge_arr_holes_len;
+		uint edge_arr_holes_len;
 		BMEdge **edge_arr_holes;
 		if (BM_face_split_edgenet_connect_islands(
 		        bm, f,
@@ -301,14 +305,14 @@ static enum ISectType intersect_line_tri(
         const struct ISectEpsilon *e)
 {
 	float p_dir[3];
-	unsigned int i_t0;
+	uint i_t0;
 	float fac;
 
 	sub_v3_v3v3(p_dir, p0, p1);
 	normalize_v3(p_dir);
 
 	for (i_t0 = 0; i_t0 < 3; i_t0++) {
-		const unsigned int i_t1 = (i_t0 + 1) % 3;
+		const uint i_t1 = (i_t0 + 1) % 3;
 		float te_dir[3];
 
 		sub_v3_v3v3(te_dir, t_cos[i_t0], t_cos[i_t1]);
@@ -371,7 +375,7 @@ static BMVert *bm_isect_edge_tri(
 {
 	BMesh *bm = s->bm;
 	int k_arr[IX_TOT][4];
-	unsigned int i;
+	uint i;
 	const int ti[3] = {UNPACK3_EX(BM_elem_index_get, t, )};
 	float ix[3];
 
@@ -466,7 +470,7 @@ static BMVert *bm_isect_edge_tri(
 		}
 
 		if ((*r_side >= IX_EDGE_TRI_EDGE0) && (*r_side <= IX_EDGE_TRI_EDGE2)) {
-			i = (unsigned int)(*r_side - IX_EDGE_TRI_EDGE0);
+			i = (uint)(*r_side - IX_EDGE_TRI_EDGE0);
 			e = BM_edge_exists(t[i], t[(i + 1) % 3]);
 			if (e) {
 				edge_verts_add(s, e, iv, false);
@@ -533,9 +537,7 @@ static void bm_isect_tri_tri(
 	const float *f_b_cos[3] = {UNPACK3_EX(, fv_b, ->co)};
 	float f_a_nor[3];
 	float f_b_nor[3];
-	int a_mask = 0;
-	int b_mask = 0;
-	unsigned int i;
+	uint i;
 
 
 	/* should be enough but may need to bump */
@@ -554,33 +556,45 @@ static void bm_isect_tri_tri(
 	STACK_INIT(iv_ls_a, ARRAY_SIZE(iv_ls_a));
 	STACK_INIT(iv_ls_b, ARRAY_SIZE(iv_ls_b));
 
+#define VERT_VISIT_A _FLAG_WALK
+#define VERT_VISIT_B _FLAG_WALK_ALT
+
+#define STACK_PUSH_TEST_A(ele) \
+	if (BM_ELEM_API_FLAG_TEST(ele, VERT_VISIT_A) == 0) { \
+		BM_ELEM_API_FLAG_ENABLE(ele, VERT_VISIT_A); \
+		STACK_PUSH(iv_ls_a, ele); \
+	} ((void)0)
+
+#define STACK_PUSH_TEST_B(ele) \
+	if (BM_ELEM_API_FLAG_TEST(ele, VERT_VISIT_B) == 0) { \
+		BM_ELEM_API_FLAG_ENABLE(ele, VERT_VISIT_B); \
+		STACK_PUSH(iv_ls_b, ele); \
+	} ((void)0)
+
+
 	/* vert-vert
 	 * --------- */
 	{
 		/* first check in any verts are touching
 		 * (any case where we wont create new verts)
 		 */
-		unsigned int i_a;
+		uint i_a;
 		for (i_a = 0; i_a < 3; i_a++) {
-			unsigned int i_b;
+			uint i_b;
 			for (i_b = 0; i_b < 3; i_b++) {
 				if (len_squared_v3v3(fv_a[i_a]->co, fv_b[i_b]->co) <= s->epsilon.eps2x_sq) {
-					if (!((1 << i_a) & a_mask)) {
-						STACK_PUSH(iv_ls_a, fv_a[i_a]);
-						a_mask |= (1 << i_a);
 #ifdef USE_DUMP
+					if (BM_ELEM_API_FLAG_TEST(fv_a[i_a], VERT_VISIT) == 0) {
 						printf("  ('VERT-VERT-A') %d, %d),\n",
 						       i_a, BM_elem_index_get(fv_a[i_a]));
-#endif
 					}
-					if (!((1 << i_b) & b_mask)) {
-						STACK_PUSH(iv_ls_b, fv_b[i_b]);
-						b_mask |= (1 << i_b);
-#ifdef USE_DUMP
+					if (BM_ELEM_API_FLAG_TEST(fv_b[i_b], VERT_VISIT) == 0) {
 						printf("  ('VERT-VERT-B') %d, %d),\n",
 						       i_b, BM_elem_index_get(fv_b[i_b]));
-#endif
 					}
+#endif
+					STACK_PUSH_TEST_A(fv_a[i_a]);
+					STACK_PUSH_TEST_B(fv_b[i_b]);
 				}
 			}
 		}
@@ -589,24 +603,27 @@ static void bm_isect_tri_tri(
 	/* vert-edge
 	 * --------- */
 	{
-		unsigned int i_a;
+		uint i_a;
 		for (i_a = 0; i_a < 3; i_a++) {
-			if (!((1 << i_a) & a_mask)) {
-				unsigned int i_b_e0;
+			if (BM_ELEM_API_FLAG_TEST(fv_a[i_a], VERT_VISIT_A) == 0) {
+				uint i_b_e0;
 				for (i_b_e0 = 0; i_b_e0 < 3; i_b_e0++) {
-					unsigned int i_b_e1 = (i_b_e0 + 1) % 3;
-					float fac;
-					if (((1 << i_b_e0) | (1 << i_b_e1)) & b_mask)
+					uint i_b_e1 = (i_b_e0 + 1) % 3;
+
+					if (BM_ELEM_API_FLAG_TEST(fv_b[i_b_e0], VERT_VISIT_B) ||
+					    BM_ELEM_API_FLAG_TEST(fv_b[i_b_e1], VERT_VISIT_B))
+					{
 						continue;
-					fac = line_point_factor_v3(fv_a[i_a]->co, fv_b[i_b_e0]->co, fv_b[i_b_e1]->co);
+					}
+
+					const float fac = line_point_factor_v3(fv_a[i_a]->co, fv_b[i_b_e0]->co, fv_b[i_b_e1]->co);
 					if ((fac > 0.0f - s->epsilon.eps) && (fac < 1.0f + s->epsilon.eps)) {
 						float ix[3];
 						interp_v3_v3v3(ix, fv_b[i_b_e0]->co, fv_b[i_b_e1]->co, fac);
 						if (len_squared_v3v3(ix, fv_a[i_a]->co) <= s->epsilon.eps2x_sq) {
 							BMEdge *e;
-							STACK_PUSH(iv_ls_b, fv_a[i_a]);
-							// STACK_PUSH(iv_ls_a, fv_a[i_a]);
-							a_mask |= (1 << i_a);
+							STACK_PUSH_TEST_B(fv_a[i_a]);
+							// STACK_PUSH_TEST_A(fv_a[i_a]);
 							e = BM_edge_exists(fv_b[i_b_e0], fv_b[i_b_e1]);
 #ifdef USE_DUMP
 							printf("  ('VERT-EDGE-A', %d, %d),\n",
@@ -627,24 +644,27 @@ static void bm_isect_tri_tri(
 	}
 
 	{
-		unsigned int i_b;
+		uint i_b;
 		for (i_b = 0; i_b < 3; i_b++) {
-			if (!((1 << i_b) & b_mask)) {
-				unsigned int i_a_e0;
+			if (BM_ELEM_API_FLAG_TEST(fv_b[i_b], VERT_VISIT_B) == 0) {
+				uint i_a_e0;
 				for (i_a_e0 = 0; i_a_e0 < 3; i_a_e0++) {
-					unsigned int i_a_e1 = (i_a_e0 + 1) % 3;
-					float fac;
-					if (((1 << i_a_e0) | (1 << i_a_e1)) & a_mask)
+					uint i_a_e1 = (i_a_e0 + 1) % 3;
+
+					if (BM_ELEM_API_FLAG_TEST(fv_a[i_a_e0], VERT_VISIT_A) ||
+					    BM_ELEM_API_FLAG_TEST(fv_a[i_a_e1], VERT_VISIT_A))
+					{
 						continue;
-					fac = line_point_factor_v3(fv_b[i_b]->co, fv_a[i_a_e0]->co, fv_a[i_a_e1]->co);
+					}
+
+					const float fac = line_point_factor_v3(fv_b[i_b]->co, fv_a[i_a_e0]->co, fv_a[i_a_e1]->co);
 					if ((fac > 0.0f - s->epsilon.eps) && (fac < 1.0f + s->epsilon.eps)) {
 						float ix[3];
 						interp_v3_v3v3(ix, fv_a[i_a_e0]->co, fv_a[i_a_e1]->co, fac);
 						if (len_squared_v3v3(ix, fv_b[i_b]->co) <= s->epsilon.eps2x_sq) {
 							BMEdge *e;
-							STACK_PUSH(iv_ls_a, fv_b[i_b]);
-							// STACK_PUSH(iv_ls_b, fv_b[i_b]);
-							b_mask |= (1 << i_b);
+							STACK_PUSH_TEST_A(fv_b[i_b]);
+							// STACK_PUSH_NOTEST(iv_ls_b, fv_b[i_b]);
 							e = BM_edge_exists(fv_a[i_a_e0], fv_a[i_a_e1]);
 #ifdef USE_DUMP
 							printf("  ('VERT-EDGE-B', %d, %d),\n",
@@ -652,7 +672,7 @@ static void bm_isect_tri_tri(
 #endif
 							if (e) {
 #ifdef USE_DUMP
-								printf("  adding to edge %d\n", BM_elem_index_get(e));
+								printf("# adding to edge %d\n", BM_elem_index_get(e));
 #endif
 								edge_verts_add(s, e, fv_b[i_b], true);
 							}
@@ -669,7 +689,7 @@ static void bm_isect_tri_tri(
 	{
 
 		float t_scale[3][3];
-		unsigned int i_a;
+		uint i_a;
 
 		copy_v3_v3(t_scale[0], fv_b[0]->co);
 		copy_v3_v3(t_scale[1], fv_b[1]->co);
@@ -678,17 +698,15 @@ static void bm_isect_tri_tri(
 
 		// second check for verts intersecting the triangle
 		for (i_a = 0; i_a < 3; i_a++) {
-			float ix[3];
-			if ((1 << i_a) & a_mask)
+			if (BM_ELEM_API_FLAG_TEST(fv_a[i_a], VERT_VISIT_A)) {
 				continue;
+			}
+
+			float ix[3];
 			if (isect_point_tri_v3(fv_a[i_a]->co, UNPACK3(t_scale), ix)) {
 				if (len_squared_v3v3(ix, fv_a[i_a]->co) <= s->epsilon.eps2x_sq) {
-					BLI_assert(BLI_array_findindex(iv_ls_a, STACK_SIZE(iv_ls_a), fv_a[i_a]) == -1);
-					BLI_assert(BLI_array_findindex(iv_ls_b, STACK_SIZE(iv_ls_b), fv_a[i_a]) == -1);
-
-					STACK_PUSH(iv_ls_a, fv_a[i_a]);
-					STACK_PUSH(iv_ls_b, fv_a[i_a]);
-					a_mask |= (1 << i_a);
+					STACK_PUSH_TEST_A(fv_a[i_a]);
+					STACK_PUSH_TEST_B(fv_a[i_a]);
 #ifdef USE_DUMP
 					printf("  'VERT TRI-A',\n");
 #endif
@@ -699,7 +717,7 @@ static void bm_isect_tri_tri(
 
 	{
 		float t_scale[3][3];
-		unsigned int i_b;
+		uint i_b;
 
 		copy_v3_v3(t_scale[0], fv_a[0]->co);
 		copy_v3_v3(t_scale[1], fv_a[1]->co);
@@ -707,18 +725,15 @@ static void bm_isect_tri_tri(
 		tri_v3_scale(UNPACK3(t_scale), 1.0f - s->epsilon.eps2x);
 
 		for (i_b = 0; i_b < 3; i_b++) {
-			float ix[3];
-			if ((1 << i_b) & b_mask)
+			if (BM_ELEM_API_FLAG_TEST(fv_b[i_b], VERT_VISIT_B)) {
 				continue;
+			}
 
+			float ix[3];
 			if (isect_point_tri_v3(fv_b[i_b]->co, UNPACK3(t_scale), ix)) {
 				if (len_squared_v3v3(ix, fv_b[i_b]->co) <= s->epsilon.eps2x_sq) {
-					BLI_assert(BLI_array_findindex((void **)iv_ls_a, STACK_SIZE(iv_ls_a), fv_b[i_b]) == -1);
-					BLI_assert(BLI_array_findindex((void **)iv_ls_b, STACK_SIZE(iv_ls_b), fv_b[i_b]) == -1);
-
-					STACK_PUSH(iv_ls_a, fv_b[i_b]);
-					STACK_PUSH(iv_ls_b, fv_b[i_b]);
-					b_mask |= (1 << i_b);
+					STACK_PUSH_TEST_A(fv_b[i_b]);
+					STACK_PUSH_TEST_B(fv_b[i_b]);
 #ifdef USE_DUMP
 					printf("  'VERT TRI-B',\n");
 #endif
@@ -733,7 +748,7 @@ static void bm_isect_tri_tri(
 #ifdef USE_DUMP
 		printf("# OVERLAP\n");
 #endif
-		return;
+		goto finally;
 	}
 
 	normal_tri_v3(f_a_nor, UNPACK3(f_a_cos));
@@ -742,43 +757,45 @@ static void bm_isect_tri_tri(
 	/* edge-tri & edge-edge
 	 * -------------------- */
 	{
-		unsigned int i_e0;
-		for (i_e0 = 0; i_e0 < 3; i_e0++) {
-			unsigned int i_e1 = (i_e0 + 1) % 3;
+		for (uint i_a_e0 = 0; i_a_e0 < 3; i_a_e0++) {
+			uint i_a_e1 = (i_a_e0 + 1) % 3;
 			enum ISectType side;
 			BMVert *iv;
-			if (((1 << i_e0) | (1 << i_e1)) & a_mask)
+
+			if (BM_ELEM_API_FLAG_TEST(fv_a[i_a_e0], VERT_VISIT_A) ||
+			    BM_ELEM_API_FLAG_TEST(fv_a[i_a_e1], VERT_VISIT_A))
+			{
 				continue;
-			iv = bm_isect_edge_tri(s, fv_a[i_e0], fv_a[i_e1], fv_b, b_index, f_b_cos, f_b_nor, &side);
+			}
+
+			iv = bm_isect_edge_tri(s, fv_a[i_a_e0], fv_a[i_a_e1], fv_b, b_index, f_b_cos, f_b_nor, &side);
 			if (iv) {
-				BLI_assert(BLI_array_findindex((void **)iv_ls_a, STACK_SIZE(iv_ls_a), iv) == -1);
-				BLI_assert(BLI_array_findindex((void **)iv_ls_b, STACK_SIZE(iv_ls_b), iv) == -1);
-				STACK_PUSH(iv_ls_a, iv);
-				STACK_PUSH(iv_ls_b, iv);
+				STACK_PUSH_TEST_A(iv);
+				STACK_PUSH_TEST_B(iv);
 #ifdef USE_DUMP
 				printf("  ('EDGE-TRI-A', %d),\n", side);
 #endif
 			}
 		}
 
-		for (i_e0 = 0; i_e0 < 3; i_e0++) {
-			unsigned int i_e1 = (i_e0 + 1) % 3;
+		for (uint i_b_e0 = 0; i_b_e0 < 3; i_b_e0++) {
+			uint i_b_e1 = (i_b_e0 + 1) % 3;
 			enum ISectType side;
 			BMVert *iv;
-			if (((1 << i_e0) | (1 << i_e1)) & b_mask)
+
+			if (BM_ELEM_API_FLAG_TEST(fv_b[i_b_e0], VERT_VISIT_B) ||
+			    BM_ELEM_API_FLAG_TEST(fv_b[i_b_e1], VERT_VISIT_B))
+			{
 				continue;
-			iv = bm_isect_edge_tri(s, fv_b[i_e0], fv_b[i_e1], fv_a, a_index, f_a_cos, f_a_nor, &side);
+			}
+
+			iv = bm_isect_edge_tri(s, fv_b[i_b_e0], fv_b[i_b_e1], fv_a, a_index, f_a_cos, f_a_nor, &side);
 			if (iv) {
-				/* check this wasn't handled above */
-				if (!(side >= IX_EDGE_TRI_EDGE0 && side <= IX_EDGE_TRI_EDGE2)) {
-					BLI_assert(BLI_array_findindex((void **)iv_ls_a, STACK_SIZE(iv_ls_a), iv) == -1);
-					BLI_assert(BLI_array_findindex((void **)iv_ls_b, STACK_SIZE(iv_ls_b), iv) == -1);
-					STACK_PUSH(iv_ls_a, iv);
-					STACK_PUSH(iv_ls_b, iv);
+				STACK_PUSH_TEST_A(iv);
+				STACK_PUSH_TEST_B(iv);
 #ifdef USE_DUMP
-					printf("  ('EDGE-RAY-B', %d),\n", side);
+				printf("  ('EDGE-TRI-B', %d),\n", side);
 #endif
-				}
 			}
 		}
 	}
@@ -828,6 +845,15 @@ static void bm_isect_tri_tri(
 			// BLI_assert(len(ie_vs) <= 2)
 		}
 	}
+
+finally:
+	for (i = 0; i < STACK_SIZE(iv_ls_a); i++) {
+		BM_ELEM_API_FLAG_DISABLE(iv_ls_a[i], VERT_VISIT_A); \
+	}
+	for (i = 0; i < STACK_SIZE(iv_ls_b); i++) {
+		BM_ELEM_API_FLAG_DISABLE(iv_ls_b[i], VERT_VISIT_B); \
+	}
+
 }
 
 #ifdef USE_BVH
@@ -873,7 +899,7 @@ static void raycast_callback(void *userdata,
 #endif
 
 #ifdef USE_DUMP
-			printf("%s: Adding depth %f\n", __func__, depth);
+			printf("%s: Adding depth %f\n", __func__, dist);
 #endif
 			BLI_buffer_append(raycast_data->z_buffer, float, dist);
 		}
@@ -909,7 +935,7 @@ static int isect_bvhtree_point_v3(
 	                     &raycast_data);
 
 #ifdef USE_DUMP
-	printf("%s: Total intersections: %d\n", __func__, raycast_data.num_isect);
+	printf("%s: Total intersections: %d\n", __func__, z_buffer.count);
 #endif
 
 	int num_isect;
@@ -930,7 +956,7 @@ static int isect_bvhtree_point_v3(
 		const float *depth_arr = z_buffer.data;
 		float        depth_last = depth_arr[0];
 
-		for (unsigned int i = 1; i < z_buffer.count; i++) {
+		for (uint i = 1; i < z_buffer.count; i++) {
 			if (depth_arr[i] - depth_last > eps) {
 				depth_last = depth_arr[i];
 				num_isect++;
@@ -960,7 +986,7 @@ bool BM_mesh_intersect(
         struct BMLoop *(*looptris)[3], const int looptris_tot,
         int (*test_fn)(BMFace *f, void *user_data), void *user_data,
         const bool use_self, const bool use_separate, const bool use_dissolve, const bool use_island_connect,
-        const int boolean_mode,
+        const bool use_edge_tag, const int boolean_mode,
         const float eps)
 {
 	struct ISectState s;
@@ -974,7 +1000,7 @@ bool BM_mesh_intersect(
 
 #ifdef USE_BVH
 	BVHTree *tree_a, *tree_b;
-	unsigned int tree_overlap_tot;
+	uint tree_overlap_tot;
 	BVHTreeOverlap *overlap;
 #else
 	int i_a, i_b;
@@ -1091,7 +1117,7 @@ bool BM_mesh_intersect(
 	overlap = BLI_bvhtree_overlap(tree_b, tree_a, &tree_overlap_tot, NULL, NULL);
 
 	if (overlap) {
-		unsigned int i;
+		uint i;
 
 		for (i = 0; i < tree_overlap_tot; i++) {
 #ifdef USE_DUMP
@@ -1364,7 +1390,7 @@ bool BM_mesh_intersect(
 			GHASH_ITER (gh_iter, s.face_edges) {
 				struct LinkBase *e_ls_base = BLI_ghashIterator_getValue(&gh_iter);
 				LinkNode **node_prev_p;
-				unsigned int i;
+				uint i;
 
 				node_prev_p = &e_ls_base->list;
 				for (i = 0, node = e_ls_base->list; node; i++, node = node->next) {
@@ -1429,7 +1455,7 @@ bool BM_mesh_intersect(
 			}
 
 			{
-				unsigned int i;
+				uint i;
 				for (i = 0; i < STACK_SIZE(splice_ls); i++) {
 					if (!BLI_gset_haskey(verts_invalid, splice_ls[i][0]) &&
 					    !BLI_gset_haskey(verts_invalid, splice_ls[i][1]))
@@ -1500,7 +1526,7 @@ bool BM_mesh_intersect(
 
 		BM_mesh_edgesplit(bm, false, true, false);
 	}
-	else if (boolean_mode != BMESH_ISECT_BOOLEAN_NONE) {
+	else if (boolean_mode != BMESH_ISECT_BOOLEAN_NONE || use_edge_tag) {
 		GSetIterator gs_iter;
 
 		/* no need to clear for boolean */
@@ -1584,7 +1610,7 @@ bool BM_mesh_intersect(
 
 #ifdef USE_BOOLEAN_RAYCAST_DRAW
 				{
-					unsigned int colors[4] = {0x00000000, 0xffffffff, 0xff000000, 0x0000ff};
+					uint colors[4] = {0x00000000, 0xffffffff, 0xff000000, 0x0000ff};
 					float co_other[3] = {UNPACK3(co)};
 					co_other[0] += 1000.0f;
 					bl_debug_color_set(colors[(hits & 1) == 1]);

@@ -29,12 +29,13 @@ class PHYSICS_PT_rigidbody_panel:
 
 class PHYSICS_PT_rigid_body(PHYSICS_PT_rigidbody_panel, Panel):
     bl_label = "Rigid Body"
+    COMPAT_ENGINES = {'BLENDER_RENDER'}
 
     @classmethod
     def poll(cls, context):
         obj = context.object
         return (obj and obj.rigid_body and
-                (not context.scene.render.use_game_engine))
+                (context.scene.render.engine in cls.COMPAT_ENGINES))
 
     def draw(self, context):
         layout = self.layout
@@ -52,21 +53,45 @@ class PHYSICS_PT_rigid_body(PHYSICS_PT_rigidbody_panel, Panel):
                 row = layout.row()
                 row.prop(rbo, "use_kinematic_deactivation", text="Triggered")
                 row.prop(rbo, "is_trigger")
-                row = layout.row()
-                row.prop(rbo, "is_ghost")
 
             if rbo.type == 'ACTIVE':
                 layout.prop(rbo, "mass")
 
-
-class PHYSICS_PT_rigid_body_collisions(PHYSICS_PT_rigidbody_panel, Panel):
-    bl_label = "Rigid Body Collisions"
+class PHYSICS_PT_rigid_body_trigger_advanced(PHYSICS_PT_rigidbody_panel, Panel):
+    bl_label = "Rigid Body Trigger Advanced"
+    COMPAT_ENGINES = {'BLENDER_RENDER'}
 
     @classmethod
     def poll(cls, context):
         obj = context.object
         return (obj and obj.rigid_body and
-                (not context.scene.render.use_game_engine))
+        (context.scene.render.engine in cls.COMPAT_ENGINES))
+
+    def draw(self, context):
+        layout = self.layout
+
+        ob = context.object
+        rbo = ob.rigid_body
+
+        row = layout.row()
+        row.prop(rbo, "is_ghost")
+        row.prop(rbo, "propagate_trigger")
+        row = layout.row()
+        row.prop(rbo, "constraint_dissolve")
+        row.prop(rbo, "dynamic_trigger")
+        row = layout.row()
+        row.prop(rbo, "plastic_dissolve")
+        row.prop(rbo, "stop_trigger")
+
+class PHYSICS_PT_rigid_body_collisions(PHYSICS_PT_rigidbody_panel, Panel):
+    bl_label = "Rigid Body Collisions"
+    COMPAT_ENGINES = {'BLENDER_RENDER'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.object
+        return (obj and obj.rigid_body and
+                (context.scene.render.engine in cls.COMPAT_ENGINES))
 
     def draw(self, context):
         layout = self.layout
@@ -105,13 +130,14 @@ class PHYSICS_PT_rigid_body_collisions(PHYSICS_PT_rigidbody_panel, Panel):
 class PHYSICS_PT_rigid_body_dynamics(PHYSICS_PT_rigidbody_panel, Panel):
     bl_label = "Rigid Body Dynamics"
     bl_default_closed = True
+    COMPAT_ENGINES = {'BLENDER_RENDER'}
 
     @classmethod
     def poll(cls, context):
         obj = context.object
         return (obj and obj.rigid_body and
                 obj.rigid_body.type == 'ACTIVE' and
-                (not context.scene.render.use_game_engine))
+                (context.scene.render.engine in cls.COMPAT_ENGINES))
 
     def draw(self, context):
         layout = self.layout
@@ -142,5 +168,15 @@ class PHYSICS_PT_rigid_body_dynamics(PHYSICS_PT_rigidbody_panel, Panel):
         col.prop(rbo, "linear_damping", text="Translation")
         col.prop(rbo, "angular_damping", text="Rotation")
 
+
+classes = (
+    PHYSICS_PT_rigid_body,
+    PHYSICS_PT_rigid_body_trigger_advanced,
+    PHYSICS_PT_rigid_body_collisions,
+    PHYSICS_PT_rigid_body_dynamics,
+)
+
 if __name__ == "__main__":  # only for live edit.
-    bpy.utils.register_module(__name__)
+    from bpy.utils import register_class
+    for cls in classes:
+        register_class(cls)

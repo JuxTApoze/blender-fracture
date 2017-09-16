@@ -32,8 +32,9 @@
 #include "DNA_actuator_types.h"
 #include "DNA_scene_types.h" /* for MAXFRAME */
 
-#include "BLI_utildefines.h"
 #include "BLI_math.h"
+#include "BLI_string_utils.h"
+#include "BLI_utildefines.h"
 
 #include "BLT_translation.h"
 
@@ -333,7 +334,7 @@ static void rna_Actuator_constraint_detect_material_set(struct PointerRNA *ptr, 
 	bActuator *act = (bActuator *)ptr->data;
 	bConstraintActuator *ca = act->data;
 
-	short old_value = (ca->flag & ACT_CONST_MATERIAL ? 1 : 0);
+	short old_value = (ca->flag & ACT_CONST_MATERIAL) ? 1 : 0;
 
 	if (old_value != value) {
 		ca->flag ^= ACT_CONST_MATERIAL;

@@ -363,8 +363,8 @@ void ED_vgroup_parray_remove_zero(MDeformVert **dvert_array, const int dvert_tot
 /* matching index only */
 bool ED_vgroup_array_copy(Object *ob, Object *ob_from)
 {
-	MDeformVert **dvert_array_from, **dvf;
-	MDeformVert **dvert_array, **dv;
+	MDeformVert **dvert_array_from = NULL, **dvf;
+	MDeformVert **dvert_array = NULL, **dv;
 	int dvert_tot_from;
 	int dvert_tot;
 	int i;
@@ -375,26 +375,30 @@ bool ED_vgroup_array_copy(Object *ob, Object *ob_from)
 	if (ob == ob_from)
 		return true;
 
-	ED_vgroup_parray_alloc(ob_from->data, &dvert_array_from, &dvert_tot_from, false);
-	ED_vgroup_parray_alloc(ob->data, &dvert_array, &dvert_tot, false);
-
-	if ((dvert_array == NULL) && (dvert_array_from != NULL) && BKE_object_defgroup_data_create(ob->data)) {
+	/* in case we copy vgroup between two objects using same data, we only have to care about object side of things. */
+	if (ob->data != ob_from->data) {
+		ED_vgroup_parray_alloc(ob_from->data, &dvert_array_from, &dvert_tot_from, false);
 		ED_vgroup_parray_alloc(ob->data, &dvert_array, &dvert_tot, false);
-		new_vgroup = true;
-	}
 
-	if (dvert_tot == 0 || (dvert_tot != dvert_tot_from) || dvert_array_from == NULL || dvert_array == NULL) {
-
-		if (dvert_array) MEM_freeN(dvert_array);
-		if (dvert_array_from) MEM_freeN(dvert_array_from);
-
-		if (new_vgroup == true) {
-			/* free the newly added vgroup since it wasn't compatible */
-			BKE_object_defgroup_remove_all(ob);
+		if ((dvert_array == NULL) && (dvert_array_from != NULL) && BKE_object_defgroup_data_create(ob->data)) {
+			ED_vgroup_parray_alloc(ob->data, &dvert_array, &dvert_tot, false);
+			new_vgroup = true;
 		}
 
-		/* if true: both are 0 and nothing needs changing, consider this a success */
-		return (dvert_tot == dvert_tot_from);
+		if (dvert_tot == 0 || (dvert_tot != dvert_tot_from) || dvert_array_from == NULL || dvert_array == NULL) {
+			if (dvert_array)
+				MEM_freeN(dvert_array);
+			if (dvert_array_from)
+				MEM_freeN(dvert_array_from);
+
+			if (new_vgroup == true) {
+				/* free the newly added vgroup since it wasn't compatible */
+				BKE_object_defgroup_remove_all(ob);
+			}
+
+			/* if true: both are 0 and nothing needs changing, consider this a success */
+			return (dvert_tot == dvert_tot_from);
+		}
 	}
 
 	/* do the copy */
@@ -412,21 +416,22 @@ bool ED_vgroup_array_copy(Object *ob, Object *ob_from)
 		MEM_freeN(remap);
 	}
 
-	dvf = dvert_array_from;
-	dv = dvert_array;
+	if (dvert_array_from != NULL && dvert_array != NULL) {
+		dvf = dvert_array_from;
+		dv = dvert_array;
 
-	for (i = 0; i < dvert_tot; i++, dvf++, dv++) {
-		if ((*dv)->dw)
-			MEM_freeN((*dv)->dw);
+		for (i = 0; i < dvert_tot; i++, dvf++, dv++) {
+			MEM_SAFE_FREE((*dv)->dw);
+			*(*dv) = *(*dvf);
 
-		*(*dv) = *(*dvf);
+			if ((*dv)->dw) {
+				(*dv)->dw = MEM_dupallocN((*dv)->dw);
+			}
+		}
 
-		if ((*dv)->dw)
-			(*dv)->dw = MEM_dupallocN((*dv)->dw);
+		MEM_freeN(dvert_array);
+		MEM_freeN(dvert_array_from);
 	}
-
-	MEM_freeN(dvert_array);
-	MEM_freeN(dvert_array_from);
 
 	return true;
 }
@@ -886,7 +891,7 @@ static float get_vert_def_nr(Object *ob, const int def_nr, const int vertnum)
 			const int cd_dvert_offset = CustomData_get_offset(&em->bm->vdata, CD_MDEFORMVERT);
 			/* warning, this lookup is _not_ fast */
 
-			if (cd_dvert_offset != -1) {
+			if (cd_dvert_offset != -1 && vertnum < em->bm->totvert) {
 				BMVert *eve;
 				BM_mesh_elem_table_ensure(em->bm, BM_VERT);
 				eve = BM_vert_at_index(em->bm, vertnum);
@@ -1790,13 +1795,11 @@ static void vgroup_smooth_subset(
 	}
 	else {
 		for (int i = 0; i < dvert_tot; i++) {
-			MVert *v = &me->mvert[i];
+			const MVert *v = &me->mvert[i];
 			if (v->flag & SELECT) {
-				int j;
-				for (j = 0; j < emap[i].count; j++) {
-					MEdge *e = &me->medge[emap[i].indices[j]];
-					const int i_other = (e->v1 == i ? e->v2 : e->v1);
-					MVert *v_other = &me->mvert[i_other];
+				for (int j = 0; j < emap[i].count; j++) {
+					const MEdge *e = &me->medge[emap[i].indices[j]];
+					const MVert *v_other = &me->mvert[(e->v1 == i) ? e->v2 : e->v1];
 					if ((source == WEIGHT_SMOOTH_ALL) ||
 					    (source == ((v_other->flag & SELECT) != 0)))
 					{
@@ -2099,13 +2102,18 @@ static void dvert_mirror_op(MDeformVert *dvert, MDeformVert *dvert_mirr,
 				MDeformWeight *dw =      defvert_find_index(dvert, act_vgroup);
 				MDeformWeight *dw_mirr = defvert_find_index(dvert_mirr, act_vgroup);
 
-				if (dw || dw_mirr) {
-					if (dw_mirr == NULL)
-						dw_mirr = defvert_verify_index(dvert_mirr, act_vgroup);
-					if (dw == NULL)
-						dw = defvert_verify_index(dvert, act_vgroup);
-
+				if (dw && dw_mirr) {
 					SWAP(float, dw->weight, dw_mirr->weight);
+				}
+				else if (dw) {
+					dw_mirr = defvert_verify_index(dvert_mirr, act_vgroup);
+					dw_mirr->weight = dw->weight;
+					defvert_remove_group(dvert, dw);
+				}
+				else if (dw_mirr) {
+					dw = defvert_verify_index(dvert, act_vgroup);
+					dw->weight = dw_mirr->weight;
+					defvert_remove_group(dvert_mirr, dw_mirr);
 				}
 			}
 		}
@@ -2200,28 +2208,34 @@ void ED_vgroup_mirror(Object *ob,
 
 			EDBM_verts_mirror_cache_begin(em, 0, true, false, use_topology);
 
+			BM_mesh_elem_hflag_disable_all(em->bm, BM_VERT, BM_ELEM_TAG, false);
+
 			/* Go through the list of editverts and assign them */
 			BM_ITER_MESH (eve, &iter, em->bm, BM_VERTS_OF_MESH) {
-				if ((eve_mirr = EDBM_verts_mirror_get(em, eve))) {
-					if (eve_mirr != eve) {
-						sel = BM_elem_flag_test(eve, BM_ELEM_SELECT);
-						sel_mirr = BM_elem_flag_test(eve_mirr, BM_ELEM_SELECT);
+				if (!BM_elem_flag_test(eve, BM_ELEM_TAG)) {
+					if ((eve_mirr = EDBM_verts_mirror_get(em, eve))) {
+						if (eve_mirr != eve) {
+							if (!BM_elem_flag_test(eve_mirr, BM_ELEM_TAG)) {
+								sel = BM_elem_flag_test(eve, BM_ELEM_SELECT);
+								sel_mirr = BM_elem_flag_test(eve_mirr, BM_ELEM_SELECT);
 
-						if ((sel || sel_mirr) && (eve != eve_mirr)) {
-							dvert      = BM_ELEM_CD_GET_VOID_P(eve, cd_dvert_offset);
-							dvert_mirr = BM_ELEM_CD_GET_VOID_P(eve_mirr, cd_dvert_offset);
+								if ((sel || sel_mirr) && (eve != eve_mirr)) {
+									dvert      = BM_ELEM_CD_GET_VOID_P(eve, cd_dvert_offset);
+									dvert_mirr = BM_ELEM_CD_GET_VOID_P(eve_mirr, cd_dvert_offset);
 
-							VGROUP_MIRR_OP;
-							totmirr++;
+									VGROUP_MIRR_OP;
+									totmirr++;
+								}
+
+								/* don't use these again */
+								BM_elem_flag_enable(eve, BM_ELEM_TAG);
+								BM_elem_flag_enable(eve_mirr, BM_ELEM_TAG);
+							}
 						}
 					}
-
-					/* don't use these again */
-					EDBM_verts_mirror_cache_clear(em, eve);
-					EDBM_verts_mirror_cache_clear(em, eve_mirr);
-				}
-				else {
-					totfail++;
+					else {
+						totfail++;
+					}
 				}
 			}
 			EDBM_verts_mirror_cache_end(em);
@@ -2439,8 +2453,8 @@ static int vertex_group_poll(bContext *C)
 	Object *ob = ED_object_context(C);
 	ID *data = (ob) ? ob->data : NULL;
 
-	return (ob && !ob->id.lib &&
-	        data && !data->lib &&
+	return (ob && !ID_IS_LINKED_DATABLOCK(ob) &&
+	        data && !ID_IS_LINKED_DATABLOCK(data) &&
 	        OB_TYPE_SUPPORT_VGROUP(ob->type) &&
 	        ob->defbase.first);
 }
@@ -2449,7 +2463,8 @@ static int vertex_group_supported_poll(bContext *C)
 {
 	Object *ob = ED_object_context(C);
 	ID *data = (ob) ? ob->data : NULL;
-	return (ob && !ob->id.lib && OB_TYPE_SUPPORT_VGROUP(ob->type) && data && !data->lib);
+	return (ob && !ID_IS_LINKED_DATABLOCK(ob) && OB_TYPE_SUPPORT_VGROUP(ob->type) &&
+	        data && !ID_IS_LINKED_DATABLOCK(data));
 }
 
 static int vertex_group_mesh_poll(bContext *C)
@@ -2457,8 +2472,8 @@ static int vertex_group_mesh_poll(bContext *C)
 	Object *ob = ED_object_context(C);
 	ID *data = (ob) ? ob->data : NULL;
 
-	return (ob && !ob->id.lib &&
-	        data && !data->lib &&
+	return (ob && !ID_IS_LINKED_DATABLOCK(ob) &&
+	        data && !ID_IS_LINKED_DATABLOCK(data) &&
 	        ob->type == OB_MESH &&
 	        ob->defbase.first);
 }
@@ -2467,7 +2482,7 @@ static int UNUSED_FUNCTION(vertex_group_mesh_supported_poll)(bContext *C)
 {
 	Object *ob = ED_object_context(C);
 	ID *data = (ob) ? ob->data : NULL;
-	return (ob && !ob->id.lib && ob->type == OB_MESH && data && !data->lib);
+	return (ob && !ID_IS_LINKED_DATABLOCK(ob) && ob->type == OB_MESH && data && !ID_IS_LINKED_DATABLOCK(data));
 }
 
 
@@ -2476,7 +2491,7 @@ static int UNUSED_FUNCTION(vertex_group_poll_edit) (bContext *C)
 	Object *ob = ED_object_context(C);
 	ID *data = (ob) ? ob->data : NULL;
 
-	if (!(ob && !ob->id.lib && data && !data->lib))
+	if (!(ob && !ID_IS_LINKED_DATABLOCK(ob) && data && !ID_IS_LINKED_DATABLOCK(data)))
 		return 0;
 
 	return BKE_object_is_in_editmode_vgroup(ob);
@@ -2488,7 +2503,7 @@ static int vertex_group_vert_select_poll_ex(bContext *C, const short ob_type_fla
 	Object *ob = ED_object_context(C);
 	ID *data = (ob) ? ob->data : NULL;
 
-	if (!(ob && !ob->id.lib && data && !data->lib))
+	if (!(ob && !ID_IS_LINKED_DATABLOCK(ob) && data && !ID_IS_LINKED_DATABLOCK(data)))
 		return false;
 
 	if (ob_type_flag && (((1 << ob->type) & ob_type_flag)) == 0) {
@@ -2528,7 +2543,7 @@ static int vertex_group_vert_select_unlocked_poll(bContext *C)
 	Object *ob = ED_object_context(C);
 	ID *data = (ob) ? ob->data : NULL;
 
-	if (!(ob && !ob->id.lib && data && !data->lib))
+	if (!(ob && !ID_IS_LINKED_DATABLOCK(ob) && data && !ID_IS_LINKED_DATABLOCK(data)))
 		return 0;
 
 	if (!(BKE_object_is_in_editmode_vgroup(ob) ||
@@ -2551,7 +2566,7 @@ static int vertex_group_vert_select_mesh_poll(bContext *C)
 	Object *ob = ED_object_context(C);
 	ID *data = (ob) ? ob->data : NULL;
 
-	if (!(ob && !ob->id.lib && data && !data->lib))
+	if (!(ob && !ID_IS_LINKED_DATABLOCK(ob) && data && !ID_IS_LINKED_DATABLOCK(data)))
 		return 0;
 
 	/* only difference to #vertex_group_vert_select_poll */
@@ -2595,6 +2610,8 @@ static int vertex_group_remove_exec(bContext *C, wmOperator *op)
 
 	if (RNA_boolean_get(op->ptr, "all"))
 		BKE_object_defgroup_remove_all(ob);
+	else if (RNA_boolean_get(op->ptr, "all_unlocked"))
+		BKE_object_defgroup_remove_all_ex(ob, true);
 	else
 		vgroup_delete_active(ob);
 
@@ -2624,6 +2641,7 @@ void OBJECT_OT_vertex_group_remove(wmOperatorType *ot)
 
 	/* properties */
 	RNA_def_boolean(ot->srna, "all", 0, "All", "Remove all vertex groups");
+	RNA_def_boolean(ot->srna, "all_unlocked", 0, "All Unlocked", "Remove all unlocked vertex groups");
 }
 
 static int vertex_group_assign_exec(bContext *C, wmOperator *UNUSED(op))
@@ -2740,7 +2758,7 @@ static int vertex_group_select_exec(bContext *C, wmOperator *UNUSED(op))
 {
 	Object *ob = ED_object_context(C);
 
-	if (!ob || ob->id.lib)
+	if (!ob || ID_IS_LINKED_DATABLOCK(ob))
 		return OPERATOR_CANCELLED;
 
 	vgroup_select_verts(ob, 1);
@@ -3529,8 +3547,10 @@ static int vgroup_sort_name(const void *def_a_ptr, const void *def_b_ptr)
 	return BLI_natstrcmp(def_a->name, def_b->name);
 }
 
-/* Sorts the weight groups according to the bone hierarchy of the
-   associated armature (similar to how bones are ordered in the Outliner) */
+/**
+ * Sorts the weight groups according to the bone hierarchy of the
+ * associated armature (similar to how bones are ordered in the Outliner)
+ */
 static void vgroup_sort_bone_hierarchy(Object *ob, ListBase *bonebase)
 {
 	if (bonebase == NULL) {
@@ -3622,7 +3642,8 @@ static int vgroup_move_exec(bContext *C, wmOperator *op)
 	Object *ob = ED_object_context(C);
 	bDeformGroup *def;
 	char *name_array;
-	int dir = RNA_enum_get(op->ptr, "direction"), ret;
+	int dir = RNA_enum_get(op->ptr, "direction");
+	int ret = OPERATOR_FINISHED;
 
 	def = BLI_findlink(&ob->defbase, ob->actdef - 1);
 	if (!def) {
@@ -3631,27 +3652,16 @@ static int vgroup_move_exec(bContext *C, wmOperator *op)
 
 	name_array = vgroup_init_remap(ob);
 
-	if (dir == 1) { /*up*/
-		void *prev = def->prev;
+	if (BLI_listbase_link_move(&ob->defbase, def, dir)) {
+		ret = vgroup_do_remap(ob, name_array, op);
 
-		BLI_remlink(&ob->defbase, def);
-		BLI_insertlinkbefore(&ob->defbase, prev, def);
+		if (ret != OPERATOR_CANCELLED) {
+			DAG_id_tag_update(&ob->id, OB_RECALC_DATA);
+			WM_event_add_notifier(C, NC_GEOM | ND_VERTEX_GROUP, ob);
+		}
 	}
-	else { /*down*/
-		void *next = def->next;
-
-		BLI_remlink(&ob->defbase, def);
-		BLI_insertlinkafter(&ob->defbase, next, def);
-	}
-
-	ret = vgroup_do_remap(ob, name_array, op);
 
 	if (name_array) MEM_freeN(name_array);
-
-	if (ret != OPERATOR_CANCELLED) {
-		DAG_id_tag_update(&ob->id, OB_RECALC_DATA);
-		WM_event_add_notifier(C, NC_GEOM | ND_VERTEX_GROUP, ob);
-	}
 
 	return ret;
 }
@@ -3659,8 +3669,8 @@ static int vgroup_move_exec(bContext *C, wmOperator *op)
 void OBJECT_OT_vertex_group_move(wmOperatorType *ot)
 {
 	static EnumPropertyItem vgroup_slot_move[] = {
-		{1, "UP", 0, "Up", ""},
-		{-1, "DOWN", 0, "Down", ""},
+		{-1, "UP", 0, "Up", ""},
+		{1, "DOWN", 0, "Down", ""},
 		{0, NULL, 0, NULL, NULL}
 	};
 
@@ -3676,7 +3686,8 @@ void OBJECT_OT_vertex_group_move(wmOperatorType *ot)
 	/* flags */
 	ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO;
 
-	RNA_def_enum(ot->srna, "direction", vgroup_slot_move, 0, "Direction", "Direction to move, UP or DOWN");
+	RNA_def_enum(ot->srna, "direction", vgroup_slot_move, 0, "Direction",
+	             "Direction to move the active vertex group towards");
 }
 
 static void vgroup_copy_active_to_sel_single(Object *ob, const int def_nr)

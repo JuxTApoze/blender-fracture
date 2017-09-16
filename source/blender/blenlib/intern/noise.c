@@ -1048,8 +1048,8 @@ static float noise3_perlin(float vec[3])
 	b01 = p[i + by1];
 	b11 = p[j + by1];
 
-#define VALUE_AT(rx, ry, rz) (rx * q[0] + ry * q[1] + rz * q[2])
-#define SURVE(t) (t * t * (3.0f - 2.0f * t))
+#define VALUE_AT(rx, ry, rz) ((rx) * q[0] + (ry) * q[1] + (rz) * q[2])
+#define SURVE(t) ((t) * (t) * (3.0f - 2.0f * (t)))
 
 /* lerp moved to improved perlin above */
 
@@ -1394,6 +1394,11 @@ static float voronoi_CrS(float x, float y, float z)
 /* returns unsigned cellnoise */
 static float cellNoiseU(float x, float y, float z)
 {
+	/* avoid precision issues on unit coordinates */
+	x = (x + 0.000001f)*1.00001f;
+	y = (y + 0.000001f)*1.00001f;
+	z = (z + 0.000001f)*1.00001f;
+
 	int xi = (int)(floor(x));
 	int yi = (int)(floor(y));
 	int zi = (int)(floor(z));
@@ -1411,6 +1416,11 @@ float cellNoise(float x, float y, float z)
 /* returns a vector/point/color in ca, using point hasharray directly */
 void cellNoiseV(float x, float y, float z, float ca[3])
 {
+	/* avoid precision issues on unit coordinates */
+	x = (x + 0.000001f)*1.00001f;
+	y = (y + 0.000001f)*1.00001f;
+	z = (z + 0.000001f)*1.00001f;
+
 	int xi = (int)(floor(x));
 	int yi = (int)(floor(y));
 	int zi = (int)(floor(z));

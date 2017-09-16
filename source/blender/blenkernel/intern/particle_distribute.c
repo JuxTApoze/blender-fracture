@@ -390,23 +390,29 @@ static void psys_uv_to_w(float u, float v, int quad, float *w)
 /* Find the index in "sum" array before "value" is crossed. */
 static int distribute_binary_search(float *sum, int n, float value)
 {
-	int mid, low=0, high=n;
+	int mid, low = 0, high = n - 1;
 
-	if (value == 0.f)
-		return 0;
+	if (high == low)
+		return low;
 
-	while (low <= high) {
-		mid= (low + high)/2;
+	if (sum[low] >= value)
+		return low;
+
+	if (sum[high - 1] < value)
+		return high;
+
+	while (low < high) {
+		mid = (low + high) / 2;
 		
-		if (sum[mid] < value && value <= sum[mid+1])
+		if ((sum[mid] >= value) && (sum[mid - 1] < value))
 			return mid;
 		
-		if (sum[mid] >= value)
-			high= mid - 1;
-		else if (sum[mid] < value)
-			low= mid + 1;
-		else
-			return mid;
+		if (sum[mid] > value) {
+			high = mid - 1;
+		}
+		else {
+			low = mid + 1;
+		}
 	}
 
 	return low;
@@ -421,12 +427,37 @@ static int distribute_binary_search(float *sum, int n, float value)
 static void distribute_from_verts_exec(ParticleTask *thread, ParticleData *pa, int p)
 {
 	ParticleThreadContext *ctx= thread->ctx;
-	int rng_skip_tot= PSYS_RND_DIST_SKIP; /* count how many rng_* calls wont need skipping */
+	MFace *mface;
+
+	mface = ctx->dm->getTessFaceDataArray(ctx->dm, CD_MFACE);
+
+	int rng_skip_tot = PSYS_RND_DIST_SKIP; /* count how many rng_* calls wont need skipping */
 
 	/* TODO_PARTICLE - use original index */
-	pa->num= ctx->index[p];
-	pa->fuv[0] = 1.0f;
-	pa->fuv[1] = pa->fuv[2] = pa->fuv[3] = 0.0;
+	pa->num = ctx->index[p];
+
+	zero_v4(pa->fuv);
+
+	if (pa->num != DMCACHE_NOTFOUND && pa->num < ctx->dm->getNumVerts(ctx->dm)) {
+
+		/* This finds the first face to contain the emitting vertex,
+		 * this is not ideal, but is mostly fine as UV seams generally
+		 * map to equal-colored parts of a texture */
+		for (int i = 0; i < ctx->dm->getNumTessFaces(ctx->dm); i++, mface++) {
+			if (ELEM(pa->num, mface->v1, mface->v2, mface->v3, mface->v4)) {
+				unsigned int *vert = &mface->v1;
+
+				for (int j = 0; j < 4; j++, vert++) {
+					if (*vert == pa->num) {
+						pa->fuv[j] = 1.0f;
+						break;
+					}
+				}
+
+				break;
+			}
+		}
+	}
 	
 #if ONLY_WORKING_WITH_PA_VERTS
 	if (ctx->tree) {
@@ -778,7 +809,7 @@ static int psys_thread_context_init_distribute(ParticleThreadContext *ctx, Parti
 	int cfrom=0;
 	int totelem=0, totpart, *particle_element=0, children=0, totseam=0;
 	int jitlevel= 1, distr;
-	float *element_weight=NULL,*element_sum=NULL,*jitter_offset=NULL, *vweight=NULL;
+	float *element_weight=NULL,*jitter_offset=NULL, *vweight=NULL;
 	float cur, maxweight=0.0, tweight, totweight, inv_totweight, co[3], nor[3], orco[3];
 	
 	if (ELEM(NULL, ob, psys, psys->part))
@@ -867,10 +898,7 @@ static int psys_thread_context_init_distribute(ParticleThreadContext *ctx, Parti
 		else
 			dm= CDDM_from_mesh((Mesh*)ob->data);
 
-		/* BMESH ONLY, for verts we don't care about tessfaces */
-		if (from != PART_FROM_VERT) {
-			DM_ensure_tessface(dm);
-		}
+		DM_ensure_tessface(dm);
 
 		/* we need orco for consistent distributions */
 		if (!CustomData_has_layer(&dm->vertData, CD_ORCO))
@@ -915,7 +943,6 @@ static int psys_thread_context_init_distribute(ParticleThreadContext *ctx, Parti
 
 	element_weight	= MEM_callocN(sizeof(float)*totelem, "particle_distribution_weights");
 	particle_element= MEM_callocN(sizeof(int)*totpart, "particle_distribution_indexes");
-	element_sum		= MEM_callocN(sizeof(float)*(totelem+1), "particle_distribution_sum");
 	jitter_offset	= MEM_callocN(sizeof(float)*totelem, "particle_distribution_jitoff");
 
 	/* Calculate weights from face areas */
@@ -1003,55 +1030,91 @@ static int psys_thread_context_init_distribute(ParticleThreadContext *ctx, Parti
 	}
 
 	/* Calculate total weight of all elements */
-	totweight= 0.0f;
-	for (i=0;i<totelem; i++)
-		totweight += element_weight[i];
+	int totmapped = 0;
+	totweight = 0.0f;
+	for (i = 0; i < totelem; i++) {
+		if (element_weight[i] > 0.0f) {
+			totmapped++;
+			totweight += element_weight[i];
+		}
+	}
 
-	inv_totweight = (totweight > 0.f ? 1.f/totweight : 0.f);
+	if (totmapped == 0) {
+		/* We are not allowed to distribute particles anywhere... */
+		return 0;
+	}
 
-	/* Calculate cumulative weights */
-	element_sum[0] = 0.0f;
-	for (i=0; i<totelem; i++)
-		element_sum[i+1] = element_sum[i] + element_weight[i] * inv_totweight;
-	
+	inv_totweight = 1.0f / totweight;
+
+	/* Calculate cumulative weights.
+	 * We remove all null-weighted elements from element_sum, and create a new mapping
+	 * 'activ'_elem_index -> orig_elem_index.
+	 * This simplifies greatly the filtering of zero-weighted items - and can be much more efficient
+	 * especially in random case (reducing a lot the size of binary-searched array)...
+	 */
+	float *element_sum = MEM_mallocN(sizeof(*element_sum) * totmapped, __func__);
+	int *element_map = MEM_mallocN(sizeof(*element_map) * totmapped, __func__);
+	int i_mapped = 0;
+
+	for (i = 0; i < totelem && element_weight[i] == 0.0f; i++);
+	element_sum[i_mapped] = element_weight[i] * inv_totweight;
+	element_map[i_mapped] = i;
+	i_mapped++;
+	for (i++; i < totelem; i++) {
+		if (element_weight[i] > 0.0f) {
+			element_sum[i_mapped] = element_sum[i_mapped - 1] + element_weight[i] * inv_totweight;
+			/* Skip elements which weight is so small that it does not affect the sum. */
+			if (element_sum[i_mapped] > element_sum[i_mapped - 1]) {
+				element_map[i_mapped] = i;
+				i_mapped++;
+			}
+		}
+	}
+	totmapped = i_mapped;
+
 	/* Finally assign elements to particles */
-	if ((part->flag&PART_TRAND) || (part->simplify_flag&PART_SIMPLIFY_ENABLE)) {
-		float pos;
-
-		for (p=0; p<totpart; p++) {
-			/* In theory element_sum[totelem] should be 1.0, but due to float errors this is not necessarily always true, so scale pos accordingly. */
-			pos= BLI_frand() * element_sum[totelem];
-			particle_element[p] = distribute_binary_search(element_sum, totelem, pos);
-			particle_element[p] = MIN2(totelem-1, particle_element[p]);
+	if ((part->flag & PART_TRAND) || (part->simplify_flag & PART_SIMPLIFY_ENABLE)) {
+		for (p = 0; p < totpart; p++) {
+			/* In theory element_sum[totmapped - 1] should be 1.0,
+			 * but due to float errors this is not necessarily always true, so scale pos accordingly. */
+			const float pos = BLI_frand() * element_sum[totmapped - 1];
+			const int eidx = distribute_binary_search(element_sum, totmapped, pos);
+			particle_element[p] = element_map[eidx];
+			BLI_assert(pos <= element_sum[eidx]);
+			BLI_assert(eidx ? (pos > element_sum[eidx - 1]) : (pos >= 0.0f));
 			jitter_offset[particle_element[p]] = pos;
 		}
 	}
 	else {
 		double step, pos;
 		
-		step= (totpart < 2) ? 0.5 : 1.0/(double)totpart;
-		pos = (from == PART_FROM_VERT) ? 0.0 : 1e-6; /* tiny offset to avoid zero weight face */
-		i= 0;
+		step = (totpart < 2) ? 0.5 : 1.0 / (double)totpart;
+		/* This is to address tricky issues with vertex-emitting when user tries (and expects) exact 1-1 vert/part
+		 * distribution (see T47983 and its two example files). It allows us to consider pos as
+		 * 'midpoint between v and v+1' (or 'p and p+1', depending whether we have more vertices than particles or not),
+		 * and avoid stumbling over float imprecisions in element_sum. */
+		if (from == PART_FROM_VERT) {
+			pos = (totpart < totmapped) ? 0.5 / (double)totmapped : step * 0.5;  /* We choose the smaller step. */
+		}
+		else {
+			pos = 0.0;
+		}
 
-		for (p=0; p<totpart; p++, pos+=step) {
-			while ((i < totelem) && (pos > (double)element_sum[i + 1]))
-				i++;
+		for (i = 0, p = 0; p < totpart; p++, pos += step) {
+			for ( ; (i < totmapped - 1) && (pos > (double)element_sum[i]); i++);
 
-			particle_element[p] = MIN2(totelem-1, i);
-
-			/* avoid zero weight face */
-			if (p == totpart-1 && element_weight[particle_element[p]] == 0.0f)
-				particle_element[p] = particle_element[p-1];
+			particle_element[p] = element_map[i];
 
 			jitter_offset[particle_element[p]] = pos;
 		}
 	}
 
 	MEM_freeN(element_sum);
+	MEM_freeN(element_map);
 
 	/* For hair, sort by origindex (allows optimization's in rendering), */
 	/* however with virtual parents the children need to be in random order. */
-	if (part->type == PART_HAIR && !(part->childtype==PART_CHILD_FACES && part->parents!=0.0f)) {
+	if (part->type == PART_HAIR && !(part->childtype==PART_CHILD_FACES && part->parents != 0.0f)) {
 		int *orig_index = NULL;
 
 		if (from == PART_FROM_VERT) {
@@ -1122,7 +1185,7 @@ static void psys_task_init_distribute(ParticleTask *task, ParticleSimulationData
 	task->rng = BLI_rng_new(seed);
 }
 
-static void distribute_particles_on_dm(ParticleSimulationData *sim, int from)
+static int distribute_particles_on_dm(ParticleSimulationData *sim, int from)
 {
 	TaskScheduler *task_scheduler;
 	TaskPool *task_pool;
@@ -1133,7 +1196,7 @@ static void distribute_particles_on_dm(ParticleSimulationData *sim, int from)
 	
 	/* create a task pool for distribution tasks */
 	if (!psys_thread_context_init_distribute(&ctx, sim, from))
-		return;
+		return 0;
 	
 	task_scheduler = BLI_task_scheduler_get();
 	task_pool = BLI_task_pool_create(task_scheduler, &ctx);
@@ -1161,6 +1224,8 @@ static void distribute_particles_on_dm(ParticleSimulationData *sim, int from)
 	psys_tasks_free(tasks, numtasks);
 	
 	psys_thread_context_free(&ctx);
+
+	return 1;
 }
 
 /* ready for future use, to emit particles without geometry */
@@ -1171,14 +1236,15 @@ static void distribute_particles_on_shape(ParticleSimulationData *sim, int UNUSE
 	fprintf(stderr,"Shape emission not yet possible!\n");
 }
 
-void distribute_particles(ParticleSimulationData *sim, int from)
+int distribute_particles(ParticleSimulationData *sim, int from)
 {
 	PARTICLE_PSMD;
 	int distr_error=0;
+	int ret = 0;
 
 	if (psmd) {
 		if (psmd->dm_final)
-			distribute_particles_on_dm(sim, from);
+			ret = distribute_particles_on_dm(sim, from);
 		else
 			distr_error=1;
 	}
@@ -1190,6 +1256,8 @@ void distribute_particles(ParticleSimulationData *sim, int from)
 
 		fprintf(stderr,"Particle distribution error!\n");
 	}
+
+	return ret;
 }
 
 /* ======== Simplify ======== */

@@ -190,7 +190,7 @@ class TickDiscreteDynamicsWorld : public btFractureDynamicsWorld
 		virtual void debugDrawWorld(draw_string str_callback);
 };
 
-btScalar connection_dist(btFractureBody *fbody, int index, btVector3 impact)
+static btScalar connection_dist(btFractureBody *fbody, int index, btVector3 impact)
 {
 	btConnection& con = fbody->m_connections[index];
 	btVector3 con_posA = con.m_parent->getWorldTransform().inverse() * con.m_obA->getWorldTransform().getOrigin();
@@ -201,7 +201,7 @@ btScalar connection_dist(btFractureBody *fbody, int index, btVector3 impact)
 }
 
 //KDTree needed here, we need a range search of which points are closer than distance x to the impact point
-int connection_binary_search(btFractureBody *fbody, btVector3 impact, btScalar range)
+static int connection_binary_search(btFractureBody *fbody, btVector3 impact, btScalar range)
 {
 	int mid, low = 0, high = fbody->m_connections.size();
 
@@ -230,7 +230,7 @@ int connection_binary_search(btFractureBody *fbody, btVector3 impact, btScalar r
 	return low;
 }
 
-bool weakenCompound(const btCollisionObject *body, btScalar force, btVector3 impact, btFractureDynamicsWorld *world)
+static bool weakenCompound(const btCollisionObject *body, btScalar force, btVector3 impact, btFractureDynamicsWorld *world)
 {
 	//just weaken strengths of this obA and obB according to force !
 	if (body->getInternalType() & CUSTOM_FRACTURE_TYPE && force > 0.0f)
@@ -293,7 +293,7 @@ bool weakenCompound(const btCollisionObject *body, btScalar force, btVector3 imp
 	return false;
 }
 
-void tickCallback(btDynamicsWorld *world, btScalar timeStep)
+static void tickCallback(btDynamicsWorld *world, btScalar timeStep)
 {
 	btFractureDynamicsWorld *fworld = (btFractureDynamicsWorld*)world;
 	fworld->updateBodies();
@@ -319,7 +319,8 @@ void tickCallback(btDynamicsWorld *world, btScalar timeStep)
 				const btVector3& normalOnB = pt.m_normalWorldOnB;*/
 
 				//TickDiscreteDynamicsWorld* tworld = (TickDiscreteDynamicsWorld*)world;
-				if (tworld->m_contactCallback)
+				//odd check, but in debug mode we had already numcontacts = 2 but didnt have ANY contacts... gah
+				if (tworld->m_contactCallback && j < contactManifold->getNumContacts())
 				{
 
 					rbContactPoint* cp = tworld->make_contact_point(pt, obA, obB);
@@ -436,12 +437,19 @@ void TickDiscreteDynamicsWorld::debugDrawWorld(draw_string str_callback)
 	}
 }
 
-const char* val_to_str(rbConstraint* con, int precision, int *length)
+static const char* val_to_str(rbConstraint* con, int precision, int *length)
 {
 	std::ostringstream oss;
-	oss << std::fixed << std::setprecision(precision) << con->id << ":" << con->con->getAppliedImpulse() << ":" << con->con->getBreakingImpulseThreshold();
+	btScalar threshold = con->con->getBreakingImpulseThreshold();
+	if (threshold == FLT_MAX)
+	{
+		threshold = -1;
+	}
+
+	oss << std::fixed << std::setprecision(precision) << con->id << ":" << con->con->getAppliedImpulse() << ":" << threshold;
 	*length = oss.str().length();
-	return oss.str().c_str();
+	const char *ret = strdup(oss.str().c_str());
+	return ret;
 }
 
 void TickDiscreteDynamicsWorld::debugDrawConstraints(rbConstraint* con , draw_string str_callback, float loc[3])
@@ -715,26 +723,21 @@ struct myResultCallback : public btCollisionWorld::ClosestRayResultCallback
 
 struct rbFilterCallback : public btOverlapFilterCallback
 {
-	int (*callback)(void* world, void* island1, void* island2, void* blenderOb1, void* blenderOb2);
+	int (*callback)(void* world, void* island1, void* island2, void* blenderOb1, void* blenderOb2, bool activate);
 
-	rbFilterCallback(int (*callback)(void* world, void* island1, void* island2, void* blenderOb1, void* blenderOb2)) {
+	rbFilterCallback(int (*callback)(void* world, void* island1, void* island2, void* blenderOb1, void* blenderOb2, bool activate)) {
 		this->callback = callback;
 	}
 
-	virtual bool needBroadphaseCollision(btBroadphaseProxy *proxy0, btBroadphaseProxy *proxy1) const
+	bool check_collision(rbRigidBody* rb0, rbRigidBody* rb1, bool activate, bool collides) const
 	{
-		rbRigidBody *rb0 = (rbRigidBody *)((btFractureBody *)proxy0->m_clientObject)->getUserPointer();
-		rbRigidBody *rb1 = (rbRigidBody *)((btFractureBody *)proxy1->m_clientObject)->getUserPointer();
-		
-		bool collides;
-		collides = (proxy0->m_collisionFilterGroup & proxy1->m_collisionFilterMask) != 0;
-		collides = collides && (proxy1->m_collisionFilterGroup & proxy0->m_collisionFilterMask);
 		if (!rb0 || !rb1)
 			return collides;
 
 		collides = collides && (rb0->col_groups & rb1->col_groups);
 		if (this->callback != NULL) {
 			int result = 0;
+#if 0
 			//cast ray from centroid of 1 rigidbody to another, do this only for mesh shapes (all other can use standard bbox)
 			int stype0 = rb0->body->getCollisionShape()->getShapeType();
 			int stype1 = rb1->body->getCollisionShape()->getShapeType();
@@ -804,9 +807,29 @@ struct rbFilterCallback : public btOverlapFilterCallback
 			}
 
 			collides = collides && (bool)result;
+#endif
+			result = this->callback(rb0->world->blenderWorld, rb0->meshIsland, rb1->meshIsland, rb0->blenderOb, rb1->blenderOb, activate);
+			collides = collides && (bool)result;
 		}
-		
+
 		return collides;
+	}
+
+	virtual bool needBroadphaseCollision(btBroadphaseProxy *proxy0, btBroadphaseProxy *proxy1) const
+	{
+		rbRigidBody *rb0 = (rbRigidBody *)((btFractureBody *)proxy0->m_clientObject)->getUserPointer();
+		rbRigidBody *rb1 = (rbRigidBody *)((btFractureBody *)proxy1->m_clientObject)->getUserPointer();
+		
+		bool collides;
+		collides = (proxy0->m_collisionFilterGroup &
+		           (proxy1->m_collisionFilterMask | btBroadphaseProxy::StaticFilter |
+		            btBroadphaseProxy::KinematicFilter)) != 0;
+		collides = collides && (proxy1->m_collisionFilterGroup &
+		           (proxy0->m_collisionFilterMask | btBroadphaseProxy::StaticFilter |
+		            btBroadphaseProxy::KinematicFilter));
+
+		//only apply to trigger and triggered, to improve performance, but do not actually activate
+		return this->check_collision(rb0, rb1, false, collides);
 	}
 };
 
@@ -890,8 +913,40 @@ static void idCallback(void *userPtr, int* objectId, int* shardId)
 	}
 }
 
+class CollisionFilterDispatcher : public btCollisionDispatcher
+{
+	public:
+		virtual bool needsCollision(const btCollisionObject *body0, const btCollisionObject *body1);
+		rbFilterCallback *filterCallback;
+		CollisionFilterDispatcher(btDefaultCollisionConfiguration *configuration, rbFilterCallback* callback);
+};
+
+CollisionFilterDispatcher::CollisionFilterDispatcher(btDefaultCollisionConfiguration* configuration, rbFilterCallback *callback)
+    :btCollisionDispatcher(configuration)
+{
+	this->filterCallback = callback;
+}
+
+bool CollisionFilterDispatcher::needsCollision(const btCollisionObject *body0, const btCollisionObject *body1)
+{
+	rbRigidBody *rb0 = (rbRigidBody *)((btFractureBody *)body0)->getUserPointer();
+	rbRigidBody *rb1 = (rbRigidBody *)((btFractureBody *)body1)->getUserPointer();
+
+	if (((btRigidBody*)body0)->checkCollideWithOverride(body1))
+	{
+		if (this->filterCallback)
+		{
+			return this->filterCallback->check_collision(rb0, rb1, true, true);
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
 //yuck, but need a handle for the world somewhere for collision callback...
-rbDynamicsWorld *RB_dworld_new(const float gravity[3], void* blenderWorld, void* blenderScene, int (*callback)(void *, void *, void *, void *, void *),
+rbDynamicsWorld *RB_dworld_new(const float gravity[3], void* blenderWorld, void* blenderScene, int (*callback)(void *, void *, void *, void *, void *, bool),
 							   void (*contactCallback)(rbContactPoint* cp, void *bworld), void (*idCallbackOut)(void*, void*, int*, int*),
 							   void (*tickCallback)(float timestep, void *bworld))
 {
@@ -899,13 +954,12 @@ rbDynamicsWorld *RB_dworld_new(const float gravity[3], void* blenderWorld, void*
 	
 	/* collision detection/handling */
 	world->collisionConfiguration = new btDefaultCollisionConfiguration();
-	
-	world->dispatcher = new btCollisionDispatcher(world->collisionConfiguration);
+
+	world->filterCallback = new rbFilterCallback(callback);
+	world->dispatcher = new CollisionFilterDispatcher(world->collisionConfiguration, (rbFilterCallback*)world->filterCallback);
 	btGImpactCollisionAlgorithm::registerAlgorithm((btCollisionDispatcher *)world->dispatcher);
 	
 	world->pairCache = new btDbvtBroadphase();
-	
-	world->filterCallback = new rbFilterCallback(callback);
 	world->pairCache->getOverlappingPairCache()->setOverlapFilterCallback(world->filterCallback);
 
 	/* constraint solving */
@@ -2052,7 +2106,16 @@ void RB_constraint_set_target_velocity_motor(rbConstraint *con, float velocity_l
 
 void RB_constraint_set_id(rbConstraint *con, char id[64])
 {
-	strncpy(con->id, id, strlen(id));
+	int len = strlen(id);
+	memset(con->id, '\0', 64);
+	strncpy(con->id, id, len);
+}
+
+float RB_constraint_get_breaking_threshold(rbConstraint *con)
+{
+	btTypedConstraint *constraint = reinterpret_cast<btTypedConstraint*>(con->con);
+
+	return constraint->getBreakingImpulseThreshold();
 }
 
 /* ********************************** */

@@ -177,7 +177,7 @@ float paint_get_tex_pixel(MTex *mtex, float u, float v, struct ImagePool *pool, 
 	float co[3] = {u, v, 0.0f};
 
 	externtex(mtex, co, &intensity,
-	          rgba, rgba + 1, rgba + 2, rgba + 3, thread, pool, false);
+	          rgba, rgba + 1, rgba + 2, rgba + 3, thread, pool, false, false);
 
 	return intensity;
 }
@@ -189,7 +189,7 @@ void paint_get_tex_pixel_col(MTex *mtex, float u, float v, float rgba[4], struct
 	float intensity;
 
 	hasrgb = externtex(mtex, co, &intensity,
-	                   rgba, rgba + 1, rgba + 2, rgba + 3, thread, pool, false);
+	                   rgba, rgba + 1, rgba + 2, rgba + 3, thread, pool, false, false);
 	if (!hasrgb) {
 		rgba[0] = intensity;
 		rgba[1] = intensity;
@@ -426,7 +426,7 @@ void paint_sample_color(bContext *C, ARegion *ar, int x, int y, bool texpaint_pr
 	Scene *scene = CTX_data_scene(C);
 	Paint *paint = BKE_paint_get_active_from_context(C);
 	Palette *palette = BKE_paint_palette(paint);
-	PaletteColor *color;
+	PaletteColor *color = NULL;
 	Brush *br = BKE_paint_brush(BKE_paint_get_active_from_context(C));
 	unsigned int col;
 	const unsigned char *cp;

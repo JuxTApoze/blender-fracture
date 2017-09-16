@@ -40,6 +40,7 @@
 
 #include "DNA_scene_types.h"
 #include "DNA_mask_types.h"
+#include "DNA_object_types.h"
 #include "DNA_screen_types.h"
 #include "DNA_space_types.h"
 #include "DNA_userdef_types.h"
@@ -471,7 +472,7 @@ static void draw_seq_handle(View2D *v2d, Sequence *seq, const float handsize_cla
 }
 
 /* draw info text on a sequence strip */
-static void draw_seq_text(View2D *v2d, Sequence *seq, float x1, float x2, float y1, float y2, const unsigned char background_col[3])
+static void draw_seq_text(View2D *v2d, SpaceSeq *sseq, Sequence *seq, float x1, float x2, float y1, float y2, const unsigned char background_col[3])
 {
 	rctf rect;
 	char str[32 + FILE_MAX];
@@ -540,7 +541,13 @@ static void draw_seq_text(View2D *v2d, Sequence *seq, float x1, float x2, float 
 		                       name, seq->len);
 	}
 	else if (seq->type == SEQ_TYPE_SOUND_RAM) {
-		if (seq->sound) {
+		/* If a waveform is drawn, we don't want to overlay it with text,
+		 * as it would make both hard to read. */
+		if ((sseq->flag & SEQ_ALL_WAVEFORMS) || (seq->flag & SEQ_AUDIO_DRAW_WAVEFORM)) {
+			str[0] = 0;
+			str_len = 0;
+		}
+		else if (seq->sound) {
 			str_len = BLI_snprintf(str, sizeof(str), "%s: %s | %d",
 			                       name, seq->sound->name, seq->len);
 		}
@@ -593,7 +600,6 @@ void draw_shadedstrip(Sequence *seq, unsigned char col[3], float x1, float y1, f
 	ymid1 = (y2 - y1) * 0.25f + y1;
 	ymid2 = (y2 - y1) * 0.65f + y1;
 	
-	glShadeModel(GL_SMOOTH);
 	glBegin(GL_QUADS);
 	
 	if (seq->flag & SEQ_INVALID_EFFECT) { col[0] = 255; col[1] = 0; col[2] = 255; }
@@ -840,23 +846,23 @@ static void draw_seq_strip(const bContext *C, SpaceSeq *sseq, Scene *scene, AReg
 	else
 		UI_GetColorPtrShade3ubv(col, col, outline_tint);
 	
-	glColor3ubv((GLubyte *)col);
-	
+	if ((seq->type == SEQ_TYPE_META) ||
+	    ((seq->type == SEQ_TYPE_SCENE) && (seq->flag & SEQ_SCENE_STRIPS)))
+	{
+		drawmeta_contents(scene, seq, x1, y1, x2, y2);
+	}
+
 	if (seq->flag & SEQ_MUTE) {
 		glEnable(GL_LINE_STIPPLE);
 		glLineStipple(1, 0x8888);
 	}
 	
+	glColor3ubv((GLubyte *)col);
+	
 	UI_draw_roundbox_shade_x(GL_LINE_LOOP, x1, y1, x2, y2, 0.0, 0.1, 0.0);
 	
 	if (seq->flag & SEQ_MUTE) {
 		glDisable(GL_LINE_STIPPLE);
-	}
-	
-	if ((seq->type == SEQ_TYPE_META) ||
-	    ((seq->type == SEQ_TYPE_SCENE) && (seq->flag & SEQ_SCENE_STRIPS)))
-	{
-		drawmeta_contents(scene, seq, x1, y1, x2, y2);
 	}
 	
 	/* calculate if seq is long enough to print a name */
@@ -871,7 +877,7 @@ static void draw_seq_strip(const bContext *C, SpaceSeq *sseq, Scene *scene, AReg
 
 	/* nice text here would require changing the view matrix for texture text */
 	if ((x2 - x1) / pixelx > 32) {
-		draw_seq_text(v2d, seq, x1, x2, y1, y2, background_col);
+		draw_seq_text(v2d, sseq, seq, x1, x2, y1, y2, background_col);
 	}
 }
 
@@ -1111,18 +1117,16 @@ void draw_image_seq(const bContext *C, Scene *scene, ARegion *ar, SpaceSeq *sseq
 	const char *names[2] = {STEREO_LEFT_NAME, STEREO_RIGHT_NAME};
 	bool draw_metadata = false;
 
-	if (G.is_rendering == false && (scene->r.seq_flag & R_SEQ_GL_PREV) == 0) {
+	if (G.is_rendering == false && (scene->r.seq_prev_type) == OB_RENDER) {
 		/* stop all running jobs, except screen one. currently previews frustrate Render
 		 * needed to make so sequencer's rendering doesn't conflict with compositor
 		 */
 		WM_jobs_kill_type(CTX_wm_manager(C), NULL, WM_JOB_TYPE_COMPOSITE);
 
-		if ((scene->r.seq_flag & R_SEQ_GL_PREV) == 0) {
-			/* in case of final rendering used for preview, kill all previews,
-			 * otherwise threading conflict will happen in rendering module
-			 */
-			WM_jobs_kill_type(CTX_wm_manager(C), NULL, WM_JOB_TYPE_RENDER_PREVIEW);
-		}
+		/* in case of final rendering used for preview, kill all previews,
+		 * otherwise threading conflict will happen in rendering module
+		 */
+		WM_jobs_kill_type(CTX_wm_manager(C), NULL, WM_JOB_TYPE_RENDER_PREVIEW);
 	}
 
 	if ((!draw_overlay || sseq->overlay_type == SEQ_DRAW_OVERLAY_REFERENCE) && !draw_backdrop) {
@@ -1630,7 +1634,8 @@ void draw_timeline_seq(const bContext *C, ARegion *ar)
 	// NOTE: the gridlines are currently spaced every 25 frames, which is only fine for 25 fps, but maybe not for 30...
 	UI_view2d_constant_grid_draw(v2d);
 
-	if (sseq->draw_flag & SEQ_DRAW_BACKDROP) {
+	/* Only draw backdrop in pure sequence view. */
+	if (sseq->view == SEQ_VIEW_SEQUENCE && sseq->draw_flag & SEQ_DRAW_BACKDROP) {
 		draw_image_seq(C, scene, ar, sseq, scene->r.cfra, 0, false, true);
 		UI_view2d_view_ortho(v2d);
 	}

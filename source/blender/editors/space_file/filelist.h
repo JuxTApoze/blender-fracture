@@ -68,7 +68,8 @@ int                 folderlist_clear_next(struct SpaceFile *sfile);
 void                filelist_setsorting(struct FileList *filelist, const short sort);
 void                filelist_sort(struct FileList *filelist);
 
-void                filelist_setfilter_options(struct FileList *filelist, const bool hide_dot, const bool hide_parent,
+void                filelist_setfilter_options(struct FileList *filelist, const bool do_filter,
+                                               const bool hide_dot, const bool hide_parent,
                                                const unsigned int filter, const unsigned int filter_id,
                                                const char *filter_glob, const char *filter_search);
 void                filelist_filter(struct FileList *filelist);
@@ -86,6 +87,7 @@ void                filelist_clear_ex(struct FileList *filelist, const bool do_c
 void                filelist_free(struct FileList *filelist);
 
 const char *        filelist_dir(struct FileList *filelist);
+bool                filelist_is_dir(struct FileList *filelist, const char *path);
 void                filelist_setdir(struct FileList *filelist, char *r_dir);
 
 int                 filelist_files_ensure(struct FileList *filelist);

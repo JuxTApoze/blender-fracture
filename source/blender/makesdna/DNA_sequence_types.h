@@ -274,6 +274,7 @@ typedef struct GaussianBlurVars {
 typedef struct TextVars {
 	char text[512];
 	int text_size;
+	float color[4], shadow_color[4];
 	float loc[2];
 	float wrap_width;
 	char flag;
@@ -441,7 +442,7 @@ enum {
 	/* access scene strips directly (like a metastrip) */
 	SEQ_SCENE_STRIPS            = (1 << 30),
 
-	SEQ_INVALID_EFFECT          = (1 << 31),
+	SEQ_INVALID_EFFECT          = (1u << 31),
 };
 
 /* StripProxy->storage */

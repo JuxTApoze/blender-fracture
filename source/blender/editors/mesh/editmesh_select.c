@@ -32,6 +32,7 @@
 #include "MEM_guardedalloc.h"
 
 #include "BLI_bitmap.h"
+#include "BLI_bitmap_draw_2d.h"
 #include "BLI_listbase.h"
 #include "BLI_linklist.h"
 #include "BLI_linklist_stack.h"
@@ -294,7 +295,7 @@ bool EDBM_backbuf_border_mask_init(ViewContext *vc, const int mcords[][2], short
 	lasso_mask_data.px = dr_mask;
 	lasso_mask_data.width = (xmax - xmin) + 1;
 
-	fill_poly_v2i_n(
+	BLI_bitmap_draw_2d_poly_v2i_n(
 	       xmin, ymin, xmax + 1, ymax + 1,
 	       mcords, tot,
 	       edbm_mask_lasso_px_cb, &lasso_mask_data);
@@ -445,6 +446,9 @@ BMVert *EDBM_vert_find_nearest_ex(
 		unsigned int index;
 		BMVert *eve;
 		
+		/* No afterqueue (yet), so we check it now, otherwise the bm_xxxofs indices are bad. */
+		ED_view3d_backbuf_validate(vc);
+
 		index = ED_view3d_backbuf_sample_rect(
 		        vc, vc->mval, dist_px, bm_wireoffs, 0xFFFFFF, &dist_test);
 		eve = index ? BM_vert_at_index_find_or_table(bm, index - 1) : NULL;
@@ -629,7 +633,8 @@ BMEdge *EDBM_edge_find_nearest_ex(
 		float dist_test = 0.0f;
 		unsigned int index;
 		BMEdge *eed;
-		
+
+		/* No afterqueue (yet), so we check it now, otherwise the bm_xxxofs indices are bad. */
 		ED_view3d_backbuf_validate(vc);
 
 		index = ED_view3d_backbuf_sample_rect(vc, vc->mval, dist_px, bm_solidoffs, bm_wireoffs, &dist_test);
@@ -2430,12 +2435,9 @@ static void select_linked_delimit_validate(BMesh *bm, int *delimit)
 	}
 }
 
-static void select_linked_delimit_begin(BMesh *bm, short selectmode, int delimit)
+static void select_linked_delimit_begin(BMesh *bm, int delimit)
 {
 	struct DelimitData delimit_data = {0};
-
-	BMIter iter;
-	BMEdge *e;
 
 	if (delimit & BMO_DELIM_UV) {
 		delimit_data.cd_loop_type = CD_MLOOPUV;
@@ -2447,22 +2449,16 @@ static void select_linked_delimit_begin(BMesh *bm, short selectmode, int delimit
 
 	/* grr, shouldn't need to alloc BMO flags here */
 	BM_mesh_elem_toolflags_ensure(bm);
-	if (selectmode ==  SCE_SELECT_FACE) {
+
+	{
+		BMIter iter;
+		BMEdge *e;
+
 		BM_ITER_MESH (e, &iter, bm, BM_EDGES_OF_MESH) {
 			const bool is_walk_ok = (
 			        (select_linked_delimit_test(e, delimit, &delimit_data) == false));
 
-			BMO_elem_flag_set(bm, e, BMO_ELE_TAG, is_walk_ok);
-		}
-	}
-	else {
-		/* don't delimit selected edges in vert/edge mode */
-		BM_ITER_MESH (e, &iter, bm, BM_EDGES_OF_MESH) {
-			const bool is_walk_ok = (
-			        BM_elem_flag_test(e, BM_ELEM_SELECT) ||
-			        (select_linked_delimit_test(e, delimit, &delimit_data) == false));
-
-			BMO_elem_flag_set(bm, e, BMO_ELE_TAG, is_walk_ok);
+			BMO_edge_flag_set(bm, e, BMO_ELE_TAG, is_walk_ok);
 		}
 	}
 }
@@ -2491,7 +2487,7 @@ static int edbm_select_linked_exec(bContext *C, wmOperator *op)
 	select_linked_delimit_validate(bm, &delimit);
 
 	if (delimit) {
-		select_linked_delimit_begin(em->bm, em->selectmode, delimit);
+		select_linked_delimit_begin(em->bm, delimit);
 	}
 
 	if (em->selectmode & SCE_SELECT_VERTEX) {
@@ -2499,6 +2495,17 @@ static int edbm_select_linked_exec(bContext *C, wmOperator *op)
 
 		BM_ITER_MESH (v, &iter, em->bm, BM_VERTS_OF_MESH) {
 			BM_elem_flag_set(v, BM_ELEM_TAG, BM_elem_flag_test(v, BM_ELEM_SELECT));
+		}
+
+		/* exclude all delimited verts */
+		if (delimit) {
+			BMEdge *e;
+			BM_ITER_MESH (e, &iter, em->bm, BM_EDGES_OF_MESH) {
+				if (!BMO_edge_flag_test(bm, e, BMO_ELE_TAG)) {
+					BM_elem_flag_disable(e->v1, BM_ELEM_TAG);
+					BM_elem_flag_disable(e->v2, BM_ELEM_TAG);
+				}
+			}
 		}
 
 		BMW_init(&walker, em->bm, delimit ? BMW_LOOP_SHELL_WIRE : BMW_VERT_SHELL,
@@ -2546,8 +2553,17 @@ static int edbm_select_linked_exec(bContext *C, wmOperator *op)
 	else if (em->selectmode & SCE_SELECT_EDGE) {
 		BMEdge *e;
 
-		BM_ITER_MESH (e, &iter, em->bm, BM_EDGES_OF_MESH) {
-			BM_elem_flag_set(e, BM_ELEM_TAG, BM_elem_flag_test(e, BM_ELEM_SELECT));
+		if (delimit) {
+			BM_ITER_MESH (e, &iter, em->bm, BM_EDGES_OF_MESH) {
+				BM_elem_flag_set(
+				        e, BM_ELEM_TAG,
+				        (BM_elem_flag_test(e, BM_ELEM_SELECT) && BMO_edge_flag_test(bm, e, BMO_ELE_TAG)));
+			}
+		}
+		else {
+			BM_ITER_MESH (e, &iter, em->bm, BM_EDGES_OF_MESH) {
+				BM_elem_flag_set(e, BM_ELEM_TAG, BM_elem_flag_test(e, BM_ELEM_SELECT));
+			}
 		}
 
 		BMW_init(&walker, em->bm, delimit ? BMW_LOOP_SHELL_WIRE : BMW_VERT_SHELL,
@@ -2661,7 +2677,7 @@ static void edbm_select_linked_pick_ex(BMEditMesh *em, BMElem *ele, bool sel, in
 	select_linked_delimit_validate(bm, &delimit);
 
 	if (delimit) {
-		select_linked_delimit_begin(bm, em->selectmode, delimit);
+		select_linked_delimit_begin(bm, delimit);
 	}
 
 	/* Note: logic closely matches 'edbm_select_linked_exec', keep in sync */

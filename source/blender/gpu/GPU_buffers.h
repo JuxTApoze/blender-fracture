@@ -49,6 +49,7 @@ struct DerivedMesh;
 struct GSet;
 struct GPUVertPointLink;
 struct GPUDrawObject;
+struct GridCommonGPUBuffer;
 struct PBVH;
 struct MVert;
 
@@ -147,6 +148,7 @@ typedef struct GPUVertPointLink {
 /* used for GLSL materials */
 typedef struct GPUAttrib {
 	int index;
+	int info_index;
 	int size;
 	int type;
 } GPUAttrib;
@@ -158,9 +160,6 @@ GPUBuffer *GPU_buffer_alloc(size_t size);
 void GPU_buffer_free(GPUBuffer *buffer);
 
 void GPU_drawobject_free(struct DerivedMesh *dm);
-
-/* free special global multires grid buffer */
-void GPU_buffer_multires_free(bool force);
 
 /* flag that controls data type to fill buffer with, a modifier will prepare. */
 typedef enum {
@@ -178,6 +177,10 @@ typedef enum {
 	GPU_BINDING_ARRAY = 0,
 	GPU_BINDING_INDEX = 1,
 } GPUBindingType;
+
+typedef enum {
+	GPU_ATTR_INFO_SRGB = (1 << 0),
+} GPUAttrInfo;
 
 /* called before drawing */
 void GPU_vertex_setup(struct DerivedMesh *dm);
@@ -219,48 +222,53 @@ void GPU_interleaved_attrib_unbind(void);
 typedef struct GPU_PBVH_Buffers GPU_PBVH_Buffers;
 
 /* build */
-GPU_PBVH_Buffers *GPU_build_mesh_pbvh_buffers(
-        const int (*face_vert_indices)[4],
+GPU_PBVH_Buffers *GPU_pbvh_mesh_buffers_build(
+        const int (*face_vert_indices)[3],
         const struct MPoly *mpoly, const struct MLoop *mloop, const struct MLoopTri *looptri,
         const struct MVert *verts,
         const int *face_indices,
         const int  face_indices_len);
 
-GPU_PBVH_Buffers *GPU_build_grid_pbvh_buffers(int *grid_indices, int totgrid,
-                                    unsigned int **grid_hidden, int gridsize, const struct CCGKey *key);
+GPU_PBVH_Buffers *GPU_pbvh_grid_buffers_build(
+        int *grid_indices, int totgrid, unsigned int **grid_hidden, int gridsize, const struct CCGKey *key,
+        struct GridCommonGPUBuffer **grid_common_gpu_buffer);
 
-GPU_PBVH_Buffers *GPU_build_bmesh_pbvh_buffers(bool smooth_shading);
+GPU_PBVH_Buffers *GPU_pbvh_bmesh_buffers_build(bool smooth_shading);
 
 /* update */
 
-void GPU_update_mesh_pbvh_buffers(
+void GPU_pbvh_mesh_buffers_update(
         GPU_PBVH_Buffers *buffers, const struct MVert *mvert,
         const int *vert_indices, int totvert, const float *vmask,
-        const int (*face_vert_indices)[4], bool show_diffuse_color);
+        const int (*face_vert_indices)[3], bool show_diffuse_color);
 
-void GPU_update_bmesh_pbvh_buffers(GPU_PBVH_Buffers *buffers,
-                              struct BMesh *bm,
-                              struct GSet *bm_faces,
-                              struct GSet *bm_unique_verts,
-                              struct GSet *bm_other_verts,
-                              bool show_diffuse_color);
+void GPU_pbvh_bmesh_buffers_update(
+        GPU_PBVH_Buffers *buffers,
+        struct BMesh *bm,
+        struct GSet *bm_faces,
+        struct GSet *bm_unique_verts,
+        struct GSet *bm_other_verts,
+        bool show_diffuse_color);
 
-void GPU_update_grid_pbvh_buffers(GPU_PBVH_Buffers *buffers, struct CCGElem **grids,
-                             const struct DMFlagMat *grid_flag_mats,
-                             int *grid_indices, int totgrid, const struct CCGKey *key,
-                             bool show_diffuse_color);
+void GPU_pbvh_grid_buffers_update(
+        GPU_PBVH_Buffers *buffers, struct CCGElem **grids,
+        const struct DMFlagMat *grid_flag_mats,
+        int *grid_indices, int totgrid, const struct CCGKey *key,
+        bool show_diffuse_color);
 
 /* draw */
-void GPU_draw_pbvh_buffers(GPU_PBVH_Buffers *buffers, DMSetMaterial setMaterial,
-                           bool wireframe, bool fast);
+void GPU_pbvh_buffers_draw(
+        GPU_PBVH_Buffers *buffers, DMSetMaterial setMaterial,
+        bool wireframe, bool fast);
 
 /* debug PBVH draw*/
-void GPU_draw_pbvh_BB(float min[3], float max[3], bool leaf);
-void GPU_end_draw_pbvh_BB(void);
-void GPU_init_draw_pbvh_BB(void);
+void GPU_pbvh_BB_draw(float min[3], float max[3], bool leaf);
+void GPU_pbvh_BB_draw_init(void);
+void GPU_pbvh_BB_draw_end(void);
 
 bool GPU_pbvh_buffers_diffuse_changed(GPU_PBVH_Buffers *buffers, struct GSet *bm_faces, bool show_diffuse_color);
 
-void GPU_free_pbvh_buffers(GPU_PBVH_Buffers *buffers);
+void GPU_pbvh_buffers_free(GPU_PBVH_Buffers *buffers);
+void GPU_pbvh_multires_buffers_free(struct GridCommonGPUBuffer **grid_common_gpu_buffer);
 
 #endif

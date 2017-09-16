@@ -118,7 +118,7 @@ MSG_COMMENT_PREFIX = "#~ "
 MSG_CONTEXT_PREFIX = "MSGCTXT:"
 
 # The default comment prefix used in po's.
-PO_COMMENT_PREFIX= "# "
+PO_COMMENT_PREFIX = "# "
 
 # The comment prefix used to mark sources of msgids, in po's.
 PO_COMMENT_PREFIX_SOURCE = "#: "
@@ -130,7 +130,7 @@ PO_COMMENT_PREFIX_SOURCE_CUSTOM = "#. :src: "
 PO_COMMENT_PREFIX_GENERATED = "#. "
 
 # The comment prefix used to comment entries in po's.
-PO_COMMENT_PREFIX_MSG= "#~ "
+PO_COMMENT_PREFIX_MSG = "#~ "
 
 # The comment prefix used to mark fuzzy msgids, in po's.
 PO_COMMENT_FUZZY = "#, fuzzy"
@@ -329,16 +329,21 @@ WARN_MSGID_NOT_CAPITALIZED_ALLOWED = {
     "available with",
     "brown fox",
     "can't save image while rendering",
+    "constructive modifier",
+    "edge data",
     "expected a timeline/animation area to be active",
     "expected a view3d region",
     "expected a view3d region & editcurve",
     "expected a view3d region & editmesh",
+    "face data",
     "image file not found",
     "image format is read-only",
     "image path can't be written to",
     "in memory to enable editing!",
     "jumps over",
     "left",
+    "multi-res modifier",
+    "non-triangle face",
     "right",
     "the lazy dog",
     "unable to load movie clip",
@@ -351,6 +356,7 @@ WARN_MSGID_NOT_CAPITALIZED_ALLOWED = {
     "unsupported format",
     "unsupported image format",
     "unsupported movie clip format",
+    "vertex data",
     "verts only",
     "virtual parents",
 }

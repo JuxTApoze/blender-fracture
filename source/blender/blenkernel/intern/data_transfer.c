@@ -356,7 +356,7 @@ static MeshRemapIslandsCalc data_transfer_get_loop_islands_generator(const int c
 {
 	switch (cddata_type) {
 		case CD_FAKE_UV:
-			return BKE_mesh_calc_islands_loop_poly_uv;
+			return BKE_mesh_calc_islands_loop_poly_edgeseam;
 		default:
 			break;
 	}
@@ -459,9 +459,18 @@ static void data_transfer_layersmapping_add_item_cd(
         ListBase *r_map, const int cddata_type, const int mix_mode, const float mix_factor, const float *mix_weights,
         void *data_src, void *data_dst, cd_datatransfer_interp interp, void *interp_data)
 {
+	uint64_t data_flag = 0;
+
+	if (cddata_type == CD_FREESTYLE_EDGE) {
+		data_flag = FREESTYLE_EDGE_MARK;
+	}
+	else if (cddata_type == CD_FREESTYLE_FACE) {
+		data_flag = FREESTYLE_FACE_MARK;
+	}
+
 	data_transfer_layersmapping_add_item(
 	        r_map, cddata_type, mix_mode, mix_factor, mix_weights, data_src, data_dst,
-	        0, 0, 0, 0, 0, 0, interp, interp_data);
+	        0, 0, 0, 0, 0, data_flag, interp, interp_data);
 }
 
 /* Note: All those layer mapping handlers return false *only* if they were given invalid parameters.
@@ -1196,6 +1205,18 @@ bool BKE_object_data_transfer_dm(
 					           "'Topology' mapping cannot be used in this case");
 					continue;
 				}
+				if ((map_vert_mode & MREMAP_USE_EDGE) && (dm_src->getNumEdges(dm_src) == 0)) {
+					BKE_report(reports, RPT_ERROR,
+					           "Source mesh doesn't have any edges, "
+					           "None of the 'Edge' mappings can be used in this case");
+					continue;
+				}
+				if ((map_vert_mode & MREMAP_USE_POLY) && (dm_src->getNumPolys(dm_src) == 0)) {
+					BKE_report(reports, RPT_ERROR,
+					           "Source mesh doesn't have any faces, "
+					           "None of the 'Face' mappings can be used in this case");
+					continue;
+				}
 				if (ELEM(0, num_verts_dst, num_verts_src)) {
 					BKE_report(reports, RPT_ERROR,
 					           "Source or destination meshes do not have any vertices, cannot transfer vertex data");
@@ -1242,6 +1263,12 @@ bool BKE_object_data_transfer_dm(
 					BKE_report(reports, RPT_ERROR,
 					           "Source and destination meshes do not have the same amount of edges, "
 					           "'Topology' mapping cannot be used in this case");
+					continue;
+				}
+				if ((map_edge_mode & MREMAP_USE_POLY) && (dm_src->getNumPolys(dm_src) == 0)) {
+					BKE_report(reports, RPT_ERROR,
+					           "Source mesh doesn't have any faces, "
+					           "None of the 'Face' mappings can be used in this case");
 					continue;
 				}
 				if (ELEM(0, num_edges_dst, num_edges_src)) {
@@ -1303,9 +1330,15 @@ bool BKE_object_data_transfer_dm(
 					           "'Topology' mapping cannot be used in this case");
 					continue;
 				}
+				if ((map_loop_mode & MREMAP_USE_EDGE) && (dm_src->getNumEdges(dm_src) == 0)) {
+					BKE_report(reports, RPT_ERROR,
+					           "Source mesh doesn't have any edges, "
+					           "None of the 'Edge' mappings can be used in this case");
+					continue;
+				}
 				if (ELEM(0, num_loops_dst, num_loops_src)) {
 					BKE_report(reports, RPT_ERROR,
-					           "Source or destination meshes do not have any polygons, cannot transfer loop data");
+					           "Source or destination meshes do not have any faces, cannot transfer corner data");
 					continue;
 				}
 
@@ -1361,9 +1394,15 @@ bool BKE_object_data_transfer_dm(
 					           "'Topology' mapping cannot be used in this case");
 					continue;
 				}
+				if ((map_poly_mode & MREMAP_USE_EDGE) && (dm_src->getNumEdges(dm_src) == 0)) {
+					BKE_report(reports, RPT_ERROR,
+					           "Source mesh doesn't have any edges, "
+					           "None of the 'Edge' mappings can be used in this case");
+					continue;
+				}
 				if (ELEM(0, num_polys_dst, num_polys_src)) {
 					BKE_report(reports, RPT_ERROR,
-					           "Source or destination meshes do not have any polygons, cannot transfer poly data");
+					           "Source or destination meshes do not have any faces, cannot transfer face data");
 					continue;
 				}
 

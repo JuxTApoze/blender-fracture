@@ -17,9 +17,9 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-#include "util_foreach.h"
-#include "util_string.h"
-#include "util_windows.h"
+#include "util/util_foreach.h"
+#include "util/util_string.h"
+#include "util/util_windows.h"
 
 #ifdef _WIN32
 #  ifndef vsnprintf
@@ -74,7 +74,10 @@ bool string_iequals(const string& a, const string& b)
 	return false;
 }
 
-void string_split(vector<string>& tokens, const string& str, const string& separators)
+void string_split(vector<string>& tokens,
+                  const string& str,
+                  const string& separators,
+                  bool skip_empty_tokens)
 {
 	size_t token_start = 0, token_length = 0;
 	for(size_t i = 0; i < str.size(); ++i) {
@@ -87,9 +90,9 @@ void string_split(vector<string>& tokens, const string& str, const string& separ
 		}
 		else {
 			/* Current character is a separator,
-			 * append current token to the list (if token is not empty).
+			 * append current token to the list.
 			 */
-			if(token_length > 0) {
+			if(!skip_empty_tokens || token_length > 0) {
 				string token = str.substr(token_start, token_length);
 				tokens.push_back(token);
 			}
@@ -145,6 +148,12 @@ void string_replace(string& haystack, const string& needle, const string& other)
 string string_remove_trademark(const string &s)
 {
 	string result = s;
+
+	/* Special case, so we don;t leave sequential spaces behind. */
+	/* TODO(sergey): Consider using regex perhaps? */
+	string_replace(result, " (TM)", "");
+	string_replace(result, " (R)", "");
+
 	string_replace(result, "(TM)", "");
 	string_replace(result, "(R)", "");
 
@@ -165,14 +174,14 @@ string string_from_bool(bool var)
 
 wstring string_to_wstring(const string& str)
 {
-	const int length_wc = MultiByteToWideChar(CP_ACP,
+	const int length_wc = MultiByteToWideChar(CP_UTF8,
 	                                          0,
 	                                          str.c_str(),
 	                                          str.length(),
 	                                          NULL,
 	                                          0);
 	wstring str_wc(length_wc, 0);
-	MultiByteToWideChar(CP_ACP,
+	MultiByteToWideChar(CP_UTF8,
 	                    0,
 	                    str.c_str(),
 	                    str.length(),
@@ -183,7 +192,7 @@ wstring string_to_wstring(const string& str)
 
 string string_from_wstring(const wstring& str)
 {
-	int length_mb = WideCharToMultiByte(CP_ACP,
+	int length_mb = WideCharToMultiByte(CP_UTF8,
 	                                    0,
 	                                    str.c_str(),
 	                                    str.size(),
@@ -191,7 +200,7 @@ string string_from_wstring(const wstring& str)
 	                                    0,
 	                                    NULL, NULL);
 	string str_mb(length_mb, 0);
-	WideCharToMultiByte(CP_ACP,
+	WideCharToMultiByte(CP_UTF8,
 	                    0,
 	                    str.c_str(),
 	                    str.size(),
@@ -201,7 +210,87 @@ string string_from_wstring(const wstring& str)
 	return str_mb;
 }
 
+string string_to_ansi(const string& str)
+{
+	const int length_wc = MultiByteToWideChar(CP_UTF8,
+	                                          0,
+	                                          str.c_str(),
+	                                          str.length(),
+	                                          NULL,
+	                                          0);
+	wstring str_wc(length_wc, 0);
+	MultiByteToWideChar(CP_UTF8,
+	                    0,
+	                    str.c_str(),
+	                    str.length(),
+	                    &str_wc[0],
+	                    length_wc);
+
+	int length_mb = WideCharToMultiByte(CP_ACP,
+	                                    0,
+	                                    str_wc.c_str(),
+	                                    str_wc.size(),
+	                                    NULL,
+	                                    0,
+	                                    NULL, NULL);
+
+	string str_mb(length_mb, 0);
+	WideCharToMultiByte(CP_ACP,
+	                    0,
+	                    str_wc.c_str(),
+	                    str_wc.size(),
+	                    &str_mb[0],
+	                    length_mb,
+	                    NULL, NULL);
+
+	return str_mb;
+}
+
 #endif  /* _WIN32 */
+
+string string_human_readable_size(size_t size)
+{
+	static const char suffixes[] = "BKMGTPEZY";
+
+	const char* suffix = suffixes;
+	size_t r = 0;
+
+	while(size >= 1024) {
+		r = size % 1024;
+		size /= 1024;
+		suffix++;
+	}
+
+	if(*suffix != 'B')
+		return string_printf("%.2f%c", double(size*1024+r)/1024.0, *suffix);
+	else
+		return string_printf("%zu", size);
+}
+
+string string_human_readable_number(size_t num)
+{
+	if(num == 0) {
+		return "0";
+	}
+
+	/* Add thousands separators. */
+	char buf[32];
+
+	char* p = buf+31;
+	*p = '\0';
+
+	int i = -1;
+	while(num) {
+		if(++i && i % 3 == 0)
+			*(--p) = ',';
+
+		*(--p) = '0' + (num % 10);
+
+		num /= 10;
+	}
+
+	return p;
+}
 
 CCL_NAMESPACE_END
 

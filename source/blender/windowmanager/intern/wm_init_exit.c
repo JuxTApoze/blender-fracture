@@ -40,6 +40,7 @@
 
 #include "MEM_guardedalloc.h"
 
+#include "DNA_genfile.h"
 #include "DNA_scene_types.h"
 #include "DNA_userdef_types.h"
 #include "DNA_windowmanager_types.h"
@@ -54,12 +55,14 @@
 #include "BLO_writefile.h"
 
 #include "BKE_blender.h"
+#include "BKE_blender_undo.h"
 #include "BKE_context.h"
 #include "BKE_screen.h"
 #include "BKE_DerivedMesh.h"
 #include "BKE_global.h"
 #include "BKE_icons.h"
 #include "BKE_library.h"
+#include "BKE_library_remap.h"
 #include "BKE_main.h"
 #include "BKE_mball_tessellate.h"
 #include "BKE_node.h"
@@ -97,9 +100,11 @@
 #include "wm_files.h"
 #include "wm_window.h"
 
+#include "ED_anim_api.h"
 #include "ED_armature.h"
 #include "ED_gpencil.h"
 #include "ED_keyframing.h"
+#include "ED_keyframes_edit.h"
 #include "ED_node.h"
 #include "ED_render.h"
 #include "ED_space_api.h"
@@ -137,6 +142,11 @@ static void wm_free_reports(bContext *C)
 	BKE_reports_clear(reports);
 }
 
+static void wm_undo_kill_callback(bContext *C)
+{
+	WM_jobs_kill_all_except(CTX_wm_manager(C), CTX_wm_screen(C));
+}
+
 bool wm_start_with_console = false; /* used in creator.c */
 
 /* only called once, for startup */
@@ -155,11 +165,13 @@ void WM_init(bContext *C, int argc, const char **argv)
 	WM_menutype_init();
 	WM_uilisttype_init();
 
+	BKE_undo_callback_wm_kill_jobs_set(wm_undo_kill_callback);
+
 	BKE_library_callback_free_window_manager_set(wm_close_and_free);   /* library.c */
 	BKE_library_callback_free_notifier_reference_set(WM_main_remove_notifier_reference);   /* library.c */
-	BKE_library_callback_free_editor_id_reference_set(WM_main_remove_editor_id_reference);   /* library.c */
+	BKE_library_callback_remap_editor_id_reference_set(WM_main_remap_editor_id_reference);   /* library.c */
 	BKE_blender_callback_test_break_set(wm_window_testbreak); /* blender.c */
-	BKE_spacedata_callback_id_unref_set(ED_spacedata_id_unref); /* screen.c */
+	BKE_spacedata_callback_id_remap_set(ED_spacedata_id_remap); /* screen.c */
 	DAG_editors_update_cb(ED_render_id_flush_update,
 	                      ED_render_scene_update,
 	                      ED_render_scene_update_pre); /* depsgraph.c */
@@ -169,7 +181,7 @@ void WM_init(bContext *C, int argc, const char **argv)
 	ED_file_init();         /* for fsmenu */
 	ED_node_init_butfuncs();
 	
-	BLF_init(11, U.dpi); /* Please update source/gamengine/GamePlayer/GPG_ghost.cpp if you change this */
+	BLF_init(); /* Please update source/gamengine/GamePlayer/GPG_ghost.cpp if you change this */
 	BLT_lang_init();
 
 	/* Enforce loading the UI for the initial homefile */
@@ -180,14 +192,17 @@ void WM_init(bContext *C, int argc, const char **argv)
 	wm_init_reports(C);
 
 	/* get the default database, plus a wm */
-	wm_homefile_read(C, NULL, G.factory_startup, NULL);
+	wm_homefile_read(C, NULL, G.factory_startup, false, NULL, NULL);
 	
 
 	BLT_lang_set(NULL);
 
 	if (!G.background) {
+
+#ifdef WITH_INPUT_NDOF
 		/* sets 3D mouse deadzone */
 		WM_ndof_deadzone_set(U.ndof_deadzone);
+#endif
 
 		GPU_init();
 
@@ -399,13 +414,6 @@ static void free_openrecent(void)
 }
 
 
-/* bad stuff*/
-
-// XXX copy/paste buffer stuff...
-extern void free_anim_copybuf(void);
-extern void free_anim_drivers_copybuf(void);
-extern void free_fmodifiers_copybuf(void);
-
 #ifdef WIN32
 /* Read console events until there is a key event.  Also returns on any error. */
 static void wait_for_console_key(void)
@@ -435,8 +443,6 @@ static void wait_for_console_key(void)
 void WM_exit_ext(bContext *C, const bool do_python)
 {
 	wmWindowManager *wm = C ? CTX_wm_manager(C) : NULL;
-
-	BKE_sound_exit();
 
 	/* first wrap up running stuff, we assume only the active WM is running */
 	/* modal handlers are on window level freed, others too? */
@@ -497,10 +503,10 @@ void WM_exit_ext(bContext *C, const bool do_python)
 	RE_FreeAllRender();
 	RE_engines_exit();
 	
-	ED_preview_free_dbase();  /* frees a Main dbase, before free_blender! */
+	ED_preview_free_dbase();  /* frees a Main dbase, before BKE_blender_free! */
 
 	if (C && wm)
-		wm_free_reports(C);  /* before free_blender! - since the ListBases get freed there */
+		wm_free_reports(C);  /* before BKE_blender_free! - since the ListBases get freed there */
 
 	BKE_sequencer_free_clipboard(); /* sequencer.c */
 	BKE_tracking_clipboard_free();
@@ -511,14 +517,14 @@ void WM_exit_ext(bContext *C, const bool do_python)
 	COM_deinitialize();
 #endif
 	
-	free_blender();  /* blender.c, does entire library and spacetypes */
+	BKE_blender_free();  /* blender.c, does entire library and spacetypes */
 //	free_matcopybuf();
-	free_anim_copybuf();
-	free_anim_drivers_copybuf();
-	free_fmodifiers_copybuf();
+	ANIM_fcurves_copybuf_free();
+	ANIM_drivers_copybuf_free();
+	ANIM_driver_vars_copybuf_free();
+	ANIM_fmodifiers_copybuf_free();
 	ED_gpencil_anim_copybuf_free();
 	ED_gpencil_strokes_copybuf_free();
-	ED_clipboard_posebuf_free();
 	BKE_node_clipboard_clear();
 
 	BLF_exit();
@@ -536,12 +542,12 @@ void WM_exit_ext(bContext *C, const bool do_python)
 
 #ifdef WITH_PYTHON
 	/* option not to close python so we can use 'atexit' */
-	if (do_python) {
+	if (do_python && ((C == NULL) || CTX_py_init_get(C))) {
 		/* XXX - old note */
-		/* before free_blender so py's gc happens while library still exists */
+		/* before BKE_blender_free so py's gc happens while library still exists */
 		/* needed at least for a rare sigsegv that can happen in pydrivers */
 
-		/* Update for blender 2.5, move after free_blender because blender now holds references to PyObject's
+		/* Update for blender 2.5, move after BKE_blender_free because blender now holds references to PyObject's
 		 * so decref'ing them after python ends causes bad problems every time
 		 * the pyDriver bug can be fixed if it happens again we can deal with it then */
 		BPY_python_end();
@@ -566,7 +572,7 @@ void WM_exit_ext(bContext *C, const bool do_python)
 	ED_file_exit(); /* for fsmenu */
 
 	UI_exit();
-	BKE_userdef_free();
+	BKE_blender_userdef_free_data(&U);
 
 	RNA_exit(); /* should be after BPY_python_end so struct python slots are cleared */
 	
@@ -579,7 +585,15 @@ void WM_exit_ext(bContext *C, const bool do_python)
 	
 	GHOST_DisposeSystemPaths();
 
+	DNA_sdna_current_free();
+
 	BLI_threadapi_exit();
+
+	/* No need to call this early, rather do it late so that other pieces of Blender using sound may exit cleanly,
+	 * see also T50676. */
+	BKE_sound_exit();
+
+	BKE_blender_atexit();
 
 	if (MEM_get_memory_blocks_in_use() != 0) {
 		size_t mem_in_use = MEM_get_memory_in_use() + MEM_get_memory_in_use();

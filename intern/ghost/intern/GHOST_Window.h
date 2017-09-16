@@ -106,7 +106,7 @@ public:
 	 * \return The validity of the window.
 	 */
 	virtual bool getValid() const { 
-		return m_context != 0;
+		return m_context != NULL;
 	}
 
 	/**
@@ -293,6 +293,15 @@ public:
 		if (m_nativePixelSize > 0.0f)
 			return m_nativePixelSize;
 		return 1.0f;
+	}
+
+	/**
+	* Returns the recommended DPI for this window.
+	* \return The recommended DPI for this window.
+	*/
+	virtual inline GHOST_TUns16 getDPIHint()
+	{
+		return 96;
 	}
 
 #ifdef WITH_INPUT_IME

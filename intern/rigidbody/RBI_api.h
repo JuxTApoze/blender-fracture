@@ -89,7 +89,7 @@ void RB_dworld_init_compounds(rbDynamicsWorld *world);
 
 /* Create a new dynamics world instance */
 // TODO: add args to set the type of constraint solvers, etc.
-rbDynamicsWorld *RB_dworld_new(const float gravity[3], void* blenderWorld, void *blenderScene, int (*callback)(void*, void*, void*, void*, void*),
+rbDynamicsWorld *RB_dworld_new(const float gravity[3], void* blenderWorld, void *blenderScene, int (*callback)(void*, void*, void*, void*, void*, bool),
 								void (*contactCallback)(rbContactPoint*, void *), void (*idCallbackOut)(void*, void*, int*, int*),
 								void (*tickCallback)(float, void *));
 
@@ -346,6 +346,7 @@ void RB_constraint_set_solver_iterations(rbConstraint *con, int num_solver_itera
 
 /* Set breaking impulse threshold, if constraint shouldn't break it can be set to FLT_MAX */
 void RB_constraint_set_breaking_threshold(rbConstraint *con, float threshold);
+float RB_constraint_get_breaking_threshold(rbConstraint *con);
 
 void RB_constraint_set_id(rbConstraint *con, char id[64]);
 

@@ -138,7 +138,7 @@ static bool collision_response(ClothModifierData *clmd, CollisionModifierData *c
 	bool result = false;
 	
 	float v1[3], v2_old[3], v2_new[3], v_rel_old[3], v_rel_new[3];
-	float epsilon2 = BLI_bvhtree_getepsilon(collmd->bvhtree);
+	float epsilon2 = BLI_bvhtree_get_epsilon(collmd->bvhtree);
 
 	float margin_distance = (float)collpair->distance - epsilon2;
 	float mag_v_rel;
@@ -333,18 +333,13 @@ static int UNUSED_FUNCTION(cloth_calc_helper_forces)(Object *UNUSED(ob), ClothMo
 	return 1;
 }
 
-BLI_INLINE void cloth_calc_spring_force(ClothModifierData *clmd, ClothSpring *s, float time)
+BLI_INLINE void cloth_calc_spring_force(ClothModifierData *clmd, ClothSpring *s)
 {
 	Cloth *cloth = clmd->clothObject;
 	ClothSimSettings *parms = clmd->sim_parms;
 	Implicit_Data *data = cloth->implicit;
-	ClothVertex *verts = cloth->verts;
 	
 	bool no_compress = parms->flags & CLOTH_SIMSETTINGS_FLAG_NO_SPRING_COMPRESS;
-	
-	zero_v3(s->f);
-	zero_m3(s->dfdx);
-	zero_m3(s->dfdv);
 	
 	s->flags &= ~CLOTH_SPRING_FLAG_NEEDED;
 	
@@ -361,28 +356,11 @@ BLI_INLINE void cloth_calc_spring_force(ClothModifierData *clmd, ClothSpring *s,
 		if (s->type & CLOTH_SPRING_TYPE_SEWING) {
 			// TODO: verify, half verified (couldn't see error)
 			// sewing springs usually have a large distance at first so clamp the force so we don't get tunnelling through colission objects
-			BPH_mass_spring_force_spring_linear(data, s->ij, s->kl, s->restlen, k, parms->Cdis, no_compress, parms->max_sewing, s->f, s->dfdx, s->dfdv);
+			BPH_mass_spring_force_spring_linear(data, s->ij, s->kl, s->restlen, k, parms->Cdis, no_compress, parms->max_sewing);
 		}
 		else {
-			BPH_mass_spring_force_spring_linear(data, s->ij, s->kl, s->restlen, k, parms->Cdis, no_compress, 0.0f, s->f, s->dfdx, s->dfdv);
+			BPH_mass_spring_force_spring_linear(data, s->ij, s->kl, s->restlen, k, parms->Cdis, no_compress, 0.0f);
 		}
-#endif
-	}
-	else if (s->type & CLOTH_SPRING_TYPE_GOAL) {
-#ifdef CLOTH_FORCE_SPRING_GOAL
-		float goal_x[3], goal_v[3];
-		float k, scaling;
-		
-		s->flags |= CLOTH_SPRING_FLAG_NEEDED;
-		
-		// current_position = xold + t * (newposition - xold)
-		interp_v3_v3v3(goal_x, verts[s->ij].xold, verts[s->ij].xconst, time);
-		sub_v3_v3v3(goal_v, verts[s->ij].xconst, verts[s->ij].xold); // distance covered over dt==1
-		
-		scaling = parms->goalspring + s->stiffness * fabsf(parms->max_struct - parms->goalspring);
-		k = verts[s->ij].goal * scaling / (parms->avg_spring_len + FLT_EPSILON);
-		
-		BPH_mass_spring_force_spring_goal(data, s->ij, goal_x, goal_v, k, parms->goalfrict * 0.01f, s->f, s->dfdx, s->dfdv);
 #endif
 	}
 	else if (s->type & CLOTH_SPRING_TYPE_BENDING) {  /* calculate force of bending springs */
@@ -397,7 +375,7 @@ BLI_INLINE void cloth_calc_spring_force(ClothModifierData *clmd, ClothSpring *s,
 		// Fix for [#45084] for cloth stiffness must have cb proportional to kb
 		cb = kb * parms->bending_damping;
 		
-		BPH_mass_spring_force_spring_bending(data, s->ij, s->kl, s->restlen, kb, cb, s->f, s->dfdx, s->dfdv);
+		BPH_mass_spring_force_spring_bending(data, s->ij, s->kl, s->restlen, kb, cb);
 #endif
 	}
 	else if (s->type & CLOTH_SPRING_TYPE_BENDING_ANG) {
@@ -473,9 +451,24 @@ static void cloth_calc_force(ClothModifierData *clmd, float UNUSED(frame), ListB
 		/* scale gravity force */
 		mul_v3_v3fl(gravity, clmd->scene->physics_settings.gravity, 0.001f * clmd->sim_parms->effector_weights->global_gravity);
 	}
+
 	vert = cloth->verts;
 	for (i = 0; i < cloth->mvert_num; i++, vert++) {
 		BPH_mass_spring_force_gravity(data, i, vert->mass, gravity);
+
+		/* Vertex goal springs */
+		if ((!(vert->flags & CLOTH_VERT_FLAG_PINNED)) && (vert->goal > FLT_EPSILON)) {
+			float goal_x[3], goal_v[3];
+			float k;
+
+			/* divide by time_scale to prevent goal vertices' delta locations from being multiplied */
+			interp_v3_v3v3(goal_x, vert->xold, vert->xconst, time / clmd->sim_parms->time_scale);
+			sub_v3_v3v3(goal_v, vert->xconst, vert->xold); /* distance covered over dt==1 */
+
+			k = vert->goal * clmd->sim_parms->goalspring / (clmd->sim_parms->avg_spring_len + FLT_EPSILON);
+
+			BPH_mass_spring_force_spring_goal(data, i, goal_x, goal_v, k, clmd->sim_parms->goalfrict * 0.01f);
+		}
 	}
 #endif
 
@@ -543,8 +536,9 @@ static void cloth_calc_force(ClothModifierData *clmd, float UNUSED(frame), ListB
 	for (LinkNode *link = cloth->springs; link; link = link->next) {
 		ClothSpring *spring = (ClothSpring *)link->link;
 		// only handle active springs
-		if (!(spring->flags & CLOTH_SPRING_FLAG_DEACTIVATE))
-			cloth_calc_spring_force(clmd, spring, time);
+		if (!(spring->flags & CLOTH_SPRING_FLAG_DEACTIVATE)) {
+			cloth_calc_spring_force(clmd, spring);
+		}
 	}
 }
 
@@ -1004,6 +998,8 @@ int BPH_cloth_solve(Object *ob, float frame, ClothModifierData *clmd, ListBase *
 				float v[3];
 				sub_v3_v3v3(v, verts[i].xconst, verts[i].xold);
 				// mul_v3_fl(v, clmd->sim_parms->stepsPerFrame);
+				/* divide by time_scale to prevent constrained velocities from being multiplied */
+				mul_v3_fl(v, 1.0f / clmd->sim_parms->time_scale);
 				BPH_mass_spring_set_velocity(id, i, v);
 			}
 		}
@@ -1070,7 +1066,8 @@ int BPH_cloth_solve(Object *ob, float frame, ClothModifierData *clmd, ListBase *
 			if (clmd->sim_parms->flags & CLOTH_SIMSETTINGS_FLAG_GOAL) {
 				if (verts[i].flags & CLOTH_VERT_FLAG_PINNED) {
 					float x[3];
-					interp_v3_v3v3(x, verts[i].xold, verts[i].xconst, step + dt);
+					/* divide by time_scale to prevent pinned vertices' delta locations from being multiplied */
+					interp_v3_v3v3(x, verts[i].xold, verts[i].xconst, (step + dt) / clmd->sim_parms->time_scale);
 					BPH_mass_spring_set_position(id, i, x);
 				}
 			}

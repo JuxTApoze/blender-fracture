@@ -50,6 +50,7 @@ struct BoundBox;
 struct MVert;
 struct MPoly;
 struct MLoop;
+struct MEdge;
 
 struct BMesh;
 
@@ -72,33 +73,36 @@ bool BKE_get_shard_minmax(struct FracMesh *mesh, ShardID id, float min_r[3], flo
 
 /* container object handling functions */
 struct FracMesh *BKE_create_fracture_container(void);
-struct Shard *BKE_create_fracture_shard(struct MVert *mvert, struct MPoly *mpoly, struct MLoop *mloop, int totvert, int totpoly, int totloop, bool copy);
+struct Shard *BKE_create_fracture_shard(struct MVert *mvert, struct MPoly *mpoly, struct MLoop *mloop, struct MEdge *medge,
+                                        int totvert, int totpoly, int totloop, int totedge, bool copy);
 struct Shard *BKE_custom_data_to_shard(struct Shard *s, struct DerivedMesh *dm);
 
 /* utility functions */
 bool BKE_fracture_shard_center_median(struct Shard *shard, float cent[3]);
 bool BKE_fracture_shard_center_centroid(struct Shard *shard, float cent[3]);
+bool BKE_fracture_shard_center_centroid_area(struct Shard *shard, float cent[3]);
 float BKE_shard_calc_minmax(struct Shard *shard);
 
 void BKE_fracmesh_free(struct FracMesh *fm, bool doCustomData);
 void BKE_shard_free(struct Shard *s, bool doCustomData);
+struct Shard* BKE_fracture_shard_copy(struct Shard *s);
 
 
 /* DerivedMesh */
-void BKE_fracture_create_dm(struct FractureModifierData *fmd, bool doCustomData);
+struct DerivedMesh *BKE_fracture_create_dm(struct FractureModifierData *fmd, bool doCustomData, bool use_packed);
 struct DerivedMesh *BKE_shard_create_dm(struct Shard *s, bool doCustomData);
 
 /* create shards from base mesh and a list of points */
 void BKE_fracture_shard_by_points(struct FracMesh *fmesh, ShardID id, struct FracPointCloud *points, int algorithm,
                                   struct Object *obj, struct DerivedMesh *dm, short inner_material_index, float mat[4][4],
                                   int num_cuts, float fractal, bool smooth, int num_levels, int mode, bool reset, int active_setting,
-                                  int num_settings, char uv_layer[], bool threaded);
+                                  int num_settings, char uv_layer[], bool threaded, int solver, float thresh, bool shards_to_islands, int override_count, float factor);
 
 /* create shards from a base mesh and a set of other objects / cutter planes */
 void BKE_fracture_shard_by_planes(struct FractureModifierData *fmd, struct Object *obj, short inner_material_index, float mat[4][4]);
 void BKE_fracture_shard_by_greasepencil(struct FractureModifierData *fmd, struct Object *obj, short inner_material_index, float mat[4][4]);
 
-void BKE_match_vertex_coords(struct MeshIsland* mi, struct MeshIsland *par, struct Object *ob, int frame, bool is_parent);
+void BKE_match_vertex_coords(struct MeshIsland* mi, struct MeshIsland *par, struct Object *ob, int frame, bool is_parent, bool shards_to_islands);
 bool BKE_lookup_mesh_state(struct FractureModifierData *fmd, int frame, int do_lookup);
 void BKE_get_prev_entries(struct FractureModifierData *fmd);
 void BKE_get_next_entries(struct FractureModifierData *fmd);
@@ -118,8 +122,9 @@ void BKE_fracture_mesh_constraint_remove_all(struct FractureModifierData *fmd);
 
 void BKE_fracture_free_mesh_island(struct FractureModifierData *rmd, struct MeshIsland *mi, bool remove_rigidbody);
 int BKE_fracture_update_visual_mesh(struct FractureModifierData *fmd, struct Object *ob, bool do_custom_data);
-short BKE_fracture_collect_materials(struct Object* o, struct Object* ob, short matstart, struct GHash** mat_index_map);
+short BKE_fracture_collect_materials(struct Object* o, struct Object* ob, int matstart, struct GHash** mat_index_map);
 
 void BKE_bm_mesh_hflag_flush_vert(struct BMesh *bm, const char hflag);
+void BKE_meshisland_constraint_create(struct FractureModifierData* fmd, struct MeshIsland *mi1, struct MeshIsland *mi2, int con_type, float thresh);
 
 #endif /* BKE_FRACTURE_H */

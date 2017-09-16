@@ -38,6 +38,8 @@
 #include "BLI_math.h"
 #include "BLI_utildefines.h"
 
+#include "BLT_translation.h"
+
 #include "DNA_scene_types.h"
 #include "DNA_mask_types.h"
 
@@ -445,6 +447,7 @@ void SEQUENCER_OT_movieclip_strip_add(struct wmOperatorType *ot)
 	sequencer_generic_props__internal(ot, SEQPROP_STARTFRAME);
 	prop = RNA_def_enum(ot->srna, "clip", DummyRNA_NULL_items, 0, "Clip", "");
 	RNA_def_enum_funcs(prop, RNA_movieclip_itemf);
+	RNA_def_property_translation_context(prop, BLT_I18NCONTEXT_ID_MOVIECLIP);
 	RNA_def_property_flag(prop, PROP_ENUM_NO_TRANSLATE);
 	ot->prop = prop;
 }
@@ -1071,7 +1074,7 @@ static int sequencer_add_effect_strip_invoke(bContext *C, wmOperator *op, const 
 {
 	bool is_type_set = RNA_struct_property_is_set(op->ptr, "type");
 	int type = -1;
-	int prop_flag = SEQPROP_ENDFRAME;
+	int prop_flag = SEQPROP_ENDFRAME | SEQPROP_NOPATHS;
 
 	if (is_type_set) {
 		type = RNA_enum_get(op->ptr, "type");
@@ -1106,9 +1109,6 @@ void SEQUENCER_OT_effect_strip_add(struct wmOperatorType *ot)
 	/* flags */
 	ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO;
 	
-	WM_operator_properties_filesel(
-	        ot, 0, FILE_SPECIAL, FILE_OPENFILE,
-	        WM_FILESEL_FILEPATH | WM_FILESEL_RELPATH, FILE_DEFAULTDISPLAY, FILE_SORT_ALPHA);
 	sequencer_generic_props__internal(ot, SEQPROP_STARTFRAME | SEQPROP_ENDFRAME);
 	RNA_def_enum(ot->srna, "type", sequencer_prop_effect_types, SEQ_TYPE_CROSS, "Type", "Sequencer effect type");
 	RNA_def_float_vector(ot->srna, "color", 3, NULL, 0.0f, 1.0f, "Color",

@@ -40,10 +40,7 @@
 #  include <mmsystem.h>
 #  include <memory.h>
 #  include <commdlg.h>
-
-#  ifndef FREE_WINDOWS
-#    include <vfw.h>
-#  endif
+#  include <vfw.h>
 
 #  undef AVIIF_KEYFRAME // redefined in AVI_avi.h
 #  undef AVIIF_LIST // redefined in AVI_avi.h
@@ -83,18 +80,10 @@
 #  include <libswscale/swscale.h>
 #endif
 
-/* actually hard coded endianness */
-#define GET_BIG_LONG(x) (((uchar *) (x))[0] << 24 | ((uchar *) (x))[1] << 16 | ((uchar *) (x))[2] << 8 | ((uchar *) (x))[3])
-#define GET_LITTLE_LONG(x) (((uchar *) (x))[3] << 24 | ((uchar *) (x))[2] << 16 | ((uchar *) (x))[1] << 8 | ((uchar *) (x))[0])
-#define SWAP_L(x) (((x << 24) & 0xff000000) | ((x << 8) & 0xff0000) | ((x >> 8) & 0xff00) | ((x >> 24) & 0xff))
-#define SWAP_S(x) (((x << 8) & 0xff00) | ((x >> 8) & 0xff))
-
 /* more endianness... should move to a separate file... */
 #ifdef __BIG_ENDIAN__
-#  define GET_ID GET_BIG_LONG
 #  define LITTLE_LONG SWAP_LONG
 #else
-#  define GET_ID GET_LITTLE_LONG
 #  define LITTLE_LONG ENDIAN_NOP
 #endif
 
@@ -138,7 +127,7 @@ struct anim {
 	/* avi */
 	struct _AviMovie *avi;
 
-#if defined(_WIN32) && !defined(FREE_WINDOWS)
+#if defined(_WIN32)
 	/* windows avi */
 	int avistreams;
 	int firstvideo;

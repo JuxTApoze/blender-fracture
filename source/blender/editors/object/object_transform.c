@@ -90,60 +90,87 @@ static void reset_fracturemodifier_matrix(Object* ob, bool do_refresh)
 /*************************** Clear Transformation ****************************/
 
 /* clear location of object */
-static void object_clear_loc(Object *ob)
+static void object_clear_loc(Object *ob, const bool clear_delta)
 {
 	/* clear location if not locked */
-	if ((ob->protectflag & OB_LOCK_LOCX) == 0)
-		ob->loc[0] = ob->dloc[0] = 0.0f;
-	if ((ob->protectflag & OB_LOCK_LOCY) == 0)
-		ob->loc[1] = ob->dloc[1] = 0.0f;
-	if ((ob->protectflag & OB_LOCK_LOCZ) == 0)
-		ob->loc[2] = ob->dloc[2] = 0.0f;
+	if ((ob->protectflag & OB_LOCK_LOCX) == 0) {
+		ob->loc[0] = 0.0f;
+		if (clear_delta) ob->dloc[0] = 0.0f;
+	}
+	if ((ob->protectflag & OB_LOCK_LOCY) == 0) {
+		ob->loc[1] = 0.0f;
+		if (clear_delta) ob->dloc[1] = 0.0f;
+	}
+	if ((ob->protectflag & OB_LOCK_LOCZ) == 0) {
+		ob->loc[2] = 0.0f;
+		if (clear_delta) ob->dloc[2] = 0.0f;
+	}
 }
 
 /* clear rotation of object */
-static void object_clear_rot(Object *ob)
+static void object_clear_rot(Object *ob, const bool clear_delta)
 {
 	/* clear rotations that aren't locked */
 	if (ob->protectflag & (OB_LOCK_ROTX | OB_LOCK_ROTY | OB_LOCK_ROTZ | OB_LOCK_ROTW)) {
 		if (ob->protectflag & OB_LOCK_ROT4D) {
 			/* perform clamping on a component by component basis */
 			if (ob->rotmode == ROT_MODE_AXISANGLE) {
-				if ((ob->protectflag & OB_LOCK_ROTW) == 0)
-					ob->rotAngle = ob->drotAngle = 0.0f;
-				if ((ob->protectflag & OB_LOCK_ROTX) == 0)
-					ob->rotAxis[0] = ob->drotAxis[0] = 0.0f;
-				if ((ob->protectflag & OB_LOCK_ROTY) == 0)
-					ob->rotAxis[1] = ob->drotAxis[1] = 0.0f;
-				if ((ob->protectflag & OB_LOCK_ROTZ) == 0)
-					ob->rotAxis[2] = ob->drotAxis[2] = 0.0f;
+				if ((ob->protectflag & OB_LOCK_ROTW) == 0) {
+					ob->rotAngle = 0.0f;
+					if (clear_delta) ob->drotAngle = 0.0f;
+				}
+				if ((ob->protectflag & OB_LOCK_ROTX) == 0) {
+					ob->rotAxis[0] = 0.0f;
+					if (clear_delta) ob->drotAxis[0] = 0.0f;
+				}
+				if ((ob->protectflag & OB_LOCK_ROTY) == 0) {
+					ob->rotAxis[1] = 0.0f;
+					if (clear_delta) ob->drotAxis[1] = 0.0f;
+				}
+				if ((ob->protectflag & OB_LOCK_ROTZ) == 0) {
+					ob->rotAxis[2] = 0.0f;
+					if (clear_delta) ob->drotAxis[2] = 0.0f;
+				}
 					
 				/* check validity of axis - axis should never be 0,0,0 (if so, then we make it rotate about y) */
 				if (IS_EQF(ob->rotAxis[0], ob->rotAxis[1]) && IS_EQF(ob->rotAxis[1], ob->rotAxis[2]))
 					ob->rotAxis[1] = 1.0f;
-				if (IS_EQF(ob->drotAxis[0], ob->drotAxis[1]) && IS_EQF(ob->drotAxis[1], ob->drotAxis[2]))
+				if (IS_EQF(ob->drotAxis[0], ob->drotAxis[1]) && IS_EQF(ob->drotAxis[1], ob->drotAxis[2]) && clear_delta)
 					ob->drotAxis[1] = 1.0f;
 			}
 			else if (ob->rotmode == ROT_MODE_QUAT) {
-				if ((ob->protectflag & OB_LOCK_ROTW) == 0)
-					ob->quat[0] = ob->dquat[0] = 1.0f;
-				if ((ob->protectflag & OB_LOCK_ROTX) == 0)
-					ob->quat[1] = ob->dquat[1] = 0.0f;
-				if ((ob->protectflag & OB_LOCK_ROTY) == 0)
-					ob->quat[2] = ob->dquat[2] = 0.0f;
-				if ((ob->protectflag & OB_LOCK_ROTZ) == 0)
-					ob->quat[3] = ob->dquat[3] = 0.0f;
-					
+				if ((ob->protectflag & OB_LOCK_ROTW) == 0) {
+					ob->quat[0] = 1.0f;
+					if (clear_delta) ob->dquat[0] = 1.0f;
+				}
+				if ((ob->protectflag & OB_LOCK_ROTX) == 0) {
+					ob->quat[1] = 0.0f;
+					if (clear_delta) ob->dquat[1] = 0.0f;
+				}
+				if ((ob->protectflag & OB_LOCK_ROTY) == 0) {
+					ob->quat[2] = 0.0f;
+					if (clear_delta) ob->dquat[2] = 0.0f;
+				}
+				if ((ob->protectflag & OB_LOCK_ROTZ) == 0) {
+					ob->quat[3] = 0.0f;
+					if (clear_delta) ob->dquat[3] = 0.0f;
+				}
 				/* TODO: does this quat need normalizing now? */
 			}
 			else {
 				/* the flag may have been set for the other modes, so just ignore the extra flag... */
-				if ((ob->protectflag & OB_LOCK_ROTX) == 0)
-					ob->rot[0] = ob->drot[0] = 0.0f;
-				if ((ob->protectflag & OB_LOCK_ROTY) == 0)
-					ob->rot[1] = ob->drot[1] = 0.0f;
-				if ((ob->protectflag & OB_LOCK_ROTZ) == 0)
-					ob->rot[2] = ob->drot[2] = 0.0f;
+				if ((ob->protectflag & OB_LOCK_ROTX) == 0) {
+					ob->rot[0] = 0.0f;
+					if (clear_delta) ob->drot[0] = 0.0f;
+				}
+				if ((ob->protectflag & OB_LOCK_ROTY) == 0) {
+					ob->rot[1] = 0.0f;
+					if (clear_delta) ob->drot[1] = 0.0f;
+				}
+				if ((ob->protectflag & OB_LOCK_ROTZ) == 0) {
+					ob->rot[2] = 0.0f;
+					if (clear_delta) ob->drot[2] = 0.0f;
+				}
 			}
 		}
 		else {
@@ -189,34 +216,34 @@ static void object_clear_rot(Object *ob)
 	else {
 		if (ob->rotmode == ROT_MODE_QUAT) {
 			unit_qt(ob->quat);
-			unit_qt(ob->dquat);
+			if (clear_delta) unit_qt(ob->dquat);
 		}
 		else if (ob->rotmode == ROT_MODE_AXISANGLE) {
 			unit_axis_angle(ob->rotAxis, &ob->rotAngle);
-			unit_axis_angle(ob->drotAxis, &ob->drotAngle);
+			if (clear_delta) unit_axis_angle(ob->drotAxis, &ob->drotAngle);
 		}
 		else {
 			zero_v3(ob->rot);
-			zero_v3(ob->drot);
+			if (clear_delta) zero_v3(ob->drot);
 		}
 	}
 }
 
 /* clear scale of object */
-static void object_clear_scale(Object *ob)
+static void object_clear_scale(Object *ob, const bool clear_delta)
 {
 	/* clear scale factors which are not locked */
 	if ((ob->protectflag & OB_LOCK_SCALEX) == 0) {
-		ob->dscale[0] = 1.0f;
 		ob->size[0] = 1.0f;
+		if (clear_delta) ob->dscale[0] = 1.0f;
 	}
 	if ((ob->protectflag & OB_LOCK_SCALEY) == 0) {
-		ob->dscale[1] = 1.0f;
 		ob->size[1] = 1.0f;
+		if (clear_delta) ob->dscale[1] = 1.0f;
 	}
 	if ((ob->protectflag & OB_LOCK_SCALEZ) == 0) {
-		ob->dscale[2] = 1.0f;
 		ob->size[2] = 1.0f;
+		if (clear_delta) ob->dscale[2] = 1.0f;
 	}
 }
 
@@ -224,10 +251,12 @@ static void object_clear_scale(Object *ob)
 
 /* generic exec for clear-transform operators */
 static int object_clear_transform_generic_exec(bContext *C, wmOperator *op, 
-                                               void (*clear_func)(Object *), const char default_ksName[])
+                                               void (*clear_func)(Object *, const bool),
+                                               const char default_ksName[])
 {
 	Scene *scene = CTX_data_scene(C);
 	KeyingSet *ks;
+	const bool clear_delta = RNA_boolean_get(op->ptr, "clear_delta");
 	
 	/* sanity checks */
 	if (ELEM(NULL, clear_func, default_ksName)) {
@@ -249,10 +278,10 @@ static int object_clear_transform_generic_exec(bContext *C, wmOperator *op,
 			reset_fracturemodifier_matrix(ob, false);
 
 			/* run provided clearing function */
-			clear_func(ob);
-
+			clear_func(ob, clear_delta);
+			
 			ED_autokeyframe_object(C, scene, ob, ks);
-
+			
 			/* tag for updates */
 			DAG_id_tag_update(&ob->id, OB_RECALC_OB);
 		}
@@ -286,6 +315,11 @@ void OBJECT_OT_location_clear(wmOperatorType *ot)
 	
 	/* flags */
 	ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+	
+	
+	/* properties */
+	ot->prop = RNA_def_boolean(ot->srna, "clear_delta", false, "Clear Delta",
+	                           "Clear delta location in addition to clearing the normal location transform");
 }
 
 static int object_rotation_clear_exec(bContext *C, wmOperator *op)
@@ -306,6 +340,10 @@ void OBJECT_OT_rotation_clear(wmOperatorType *ot)
 	
 	/* flags */
 	ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+	
+	/* properties */
+	ot->prop = RNA_def_boolean(ot->srna, "clear_delta", false, "Clear Delta",
+	                           "Clear delta rotation in addition to clearing the normal rotation transform");
 }
 
 static int object_scale_clear_exec(bContext *C, wmOperator *op)
@@ -326,6 +364,10 @@ void OBJECT_OT_scale_clear(wmOperatorType *ot)
 	
 	/* flags */
 	ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+	
+	/* properties */
+	ot->prop = RNA_def_boolean(ot->srna, "clear_delta", false, "Clear Delta",
+	                           "Clear delta scale in addition to clearing the normal scale transform");
 }
 
 /* --------------- */
@@ -411,7 +453,7 @@ static int apply_objects_internal(bContext *C, ReportList *reports, bool apply_l
 				changed = false;
 			}
 
-			if (obdata->lib) {
+			if (ID_IS_LINKED_DATABLOCK(obdata)) {
 				BKE_reportf(reports, RPT_ERROR,
 				            "Cannot apply to library data: Object \"%s\", %s \"%s\", aborting",
 				            ob->id.name + 2, BKE_idcode_to_name(GS(obdata->name)), obdata->name + 2);
@@ -695,7 +737,8 @@ enum {
 	GEOMETRY_TO_ORIGIN = 0,
 	ORIGIN_TO_GEOMETRY,
 	ORIGIN_TO_CURSOR,
-	ORIGIN_TO_CENTER_OF_MASS
+	ORIGIN_TO_CENTER_OF_MASS_SURFACE,
+	ORIGIN_TO_CENTER_OF_MASS_VOLUME,
 };
 
 static int object_origin_set_exec(bContext *C, wmOperator *op)
@@ -819,7 +862,7 @@ static int object_origin_set_exec(bContext *C, wmOperator *op)
 			if (ob->data == NULL) {
 				/* special support for dupligroups */
 				if ((ob->transflag & OB_DUPLIGROUP) && ob->dup_group && (ob->dup_group->id.tag & LIB_TAG_DOIT) == 0) {
-					if (ob->dup_group->id.lib) {
+					if (ID_IS_LINKED_DATABLOCK(ob->dup_group)) {
 						tot_lib_error++;
 					}
 					else {
@@ -844,17 +887,28 @@ static int object_origin_set_exec(bContext *C, wmOperator *op)
 					}
 				}
 			}
-			else if (((ID *)ob->data)->lib) {
+			else if (ID_IS_LINKED_DATABLOCK(ob->data)) {
 				tot_lib_error++;
 			}
 
 			if (obedit == NULL && ob->type == OB_MESH) {
 				Mesh *me = ob->data;
 
-				if (centermode == ORIGIN_TO_CURSOR) { /* done */ }
-				else if (centermode == ORIGIN_TO_CENTER_OF_MASS)    { BKE_mesh_center_centroid(me, cent); }
-				else if (around == V3D_AROUND_CENTER_MEAN)          { BKE_mesh_center_median(me, cent); }
-				else                                                { BKE_mesh_center_bounds(me, cent); }
+				if (centermode == ORIGIN_TO_CURSOR) {
+					/* done */
+				}
+				else if (centermode == ORIGIN_TO_CENTER_OF_MASS_SURFACE) {
+					BKE_mesh_center_of_surface(me, cent);
+				}
+				else if (centermode == ORIGIN_TO_CENTER_OF_MASS_VOLUME) {
+					BKE_mesh_center_of_volume(me, cent);
+				}
+				else if (around == V3D_AROUND_CENTER_MEAN) {
+					BKE_mesh_center_median(me, cent);
+				}
+				else {
+					BKE_mesh_center_bounds(me, cent);
+				}
 
 				negate_v3_v3(cent_neg, cent);
 				BKE_mesh_translate(me, cent_neg, 1);
@@ -908,8 +962,8 @@ static int object_origin_set_exec(bContext *C, wmOperator *op)
 
 					cent[2] = 0.0f;
 
-					cu->xof = cu->xof - (cent[0] / cu->fsize);
-					cu->yof = cu->yof - (cent[1] / cu->fsize);
+					cu->xof = cu->xof - cent[0];
+					cu->yof = cu->yof - cent[1];
 
 					tot_change++;
 					cu->id.tag |= LIB_TAG_DOIT;
@@ -1062,11 +1116,14 @@ void OBJECT_OT_origin_set(wmOperatorType *ot)
 	static EnumPropertyItem prop_set_center_types[] = {
 		{GEOMETRY_TO_ORIGIN, "GEOMETRY_ORIGIN", 0, "Geometry to Origin", "Move object geometry to object origin"},
 		{ORIGIN_TO_GEOMETRY, "ORIGIN_GEOMETRY", 0, "Origin to Geometry",
-		                     "Move object origin to center of object geometry"},
+		 "Calculate the center of geometry based on the current pivot point (median, otherwise bounding-box)"},
 		{ORIGIN_TO_CURSOR, "ORIGIN_CURSOR", 0, "Origin to 3D Cursor",
-		                   "Move object origin to position of the 3D cursor"},
-		{ORIGIN_TO_CENTER_OF_MASS, "ORIGIN_CENTER_OF_MASS", 0, "Origin to Center of Mass",
-		                           "Move object origin to the object center of mass (assuming uniform density)"},
+		 "Move object origin to position of the 3D cursor"},
+		/* Intentional naming mismatch since some scripts refer to this. */
+		{ORIGIN_TO_CENTER_OF_MASS_SURFACE, "ORIGIN_CENTER_OF_MASS", 0, "Origin to Center of Mass (Surface)",
+		 "Calculate the center of mass from the surface area"},
+		{ORIGIN_TO_CENTER_OF_MASS_VOLUME, "ORIGIN_CENTER_OF_VOLUME", 0, "Origin to Center of Mass (Volume)",
+		 "Calculate the center of mass from the volume (must be manifold geometry with consistent normals)"},
 		{0, NULL, 0, NULL, NULL}
 	};
 	

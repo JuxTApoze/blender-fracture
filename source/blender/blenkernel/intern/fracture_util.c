@@ -31,10 +31,12 @@
  */
 
 #include "BKE_cdderivedmesh.h"
+#include "BKE_deform.h"
 #include "BKE_editmesh.h"
 #include "BKE_fracture.h"
 #include "BKE_fracture_util.h"
 #include "BKE_material.h"
+#include "BKE_modifier.h"
 #include "BKE_object.h"
 
 #include "BLI_alloca.h"
@@ -62,7 +64,7 @@ void uv_bbox(float uv[][2], int num_uv, float minv[2], float maxv[2]);
 void uv_translate(float uv[][2], int num_uv, float trans[2]);
 void uv_scale(float uv[][2], int num_uv, float scale);
 void uv_transform(float uv[][2], int num_uv, float mat[2][2]);
-void unwrap_shard_dm(DerivedMesh *dm, char uv_layer[]);
+void unwrap_shard_dm(DerivedMesh *dm, char uv_layer[], bool do_boxpack);
 
 /* UV Helpers */
 void uv_bbox(float uv[][2], int num_uv, float minv[2], float maxv[2])
@@ -182,7 +184,7 @@ static void do_unwrap(MPoly *mp, MVert *mvert, MLoop* mloop, int i, MLoopUV **ml
 	MEM_freeN(verts);
 }
 
-void unwrap_shard_dm(DerivedMesh *dm, char uv_layer[64])
+void unwrap_shard_dm(DerivedMesh *dm, char uv_layer[64], bool do_boxpack)
 {
 	MVert *mvert;
 	MLoop *mloop;
@@ -201,27 +203,30 @@ void unwrap_shard_dm(DerivedMesh *dm, char uv_layer[64])
 		do_unwrap(mp, mvert, mloop, i, &mluv, &boxpack);
 	}
 
-	/* do box packing and match uvs according to it */
-	BLI_box_pack_2d(boxpack, totpoly, &tot_width, &tot_height);
+	if (do_boxpack)
+	{
+		/* do box packing and match uvs according to it */
+		BLI_box_pack_2d(boxpack, totpoly, &tot_width, &tot_height);
 
-	if (tot_height > tot_width)
-		scale = 1.0f / tot_height;
-	else
-		scale = 1.0f / tot_width;
+		if (tot_height > tot_width)
+			scale = 1.0f / tot_height;
+		else
+			scale = 1.0f / tot_width;
 
-	for (i = 0, mp = mpoly; i < totpoly; i++, mp++) {
-		float trans[2];
-		BoxPack *box;
-		int j;
+		for (i = 0, mp = mpoly; i < totpoly; i++, mp++) {
+			float trans[2];
+			BoxPack *box;
+			int j;
 
-		box = boxpack + i;
-		trans[0] = box->x;
-		trans[1] = box->y;
+			box = boxpack + i;
+			trans[0] = box->x;
+			trans[1] = box->y;
 
-		for (j = 0; j < mp->totloop; j++)
-		{
-			uv_translate((float (*)[2])mluv[j + mp->loopstart].uv, 1, trans);
-			uv_scale((float (*)[2])mluv[j + mp->loopstart].uv, 1, scale);
+			for (j = 0; j < mp->totloop; j++)
+			{
+				uv_translate((float (*)[2])mluv[j + mp->loopstart].uv, 1, trans);
+				uv_scale((float (*)[2])mluv[j + mp->loopstart].uv, 1, scale);
+			}
 		}
 	}
 
@@ -239,7 +244,8 @@ static bool check_non_manifold(DerivedMesh* dm)
 	BMEdge *e;
 
 	/*check for watertightness*/
-	bm = DM_to_bmesh(dm, true);
+	bm = BM_mesh_create(&bm_mesh_allocsize_default, &((struct BMeshCreateParams){.use_toolflags = true,}));
+	DM_to_bmesh_ex(dm, bm, true);
 
 	if (bm->totface < 4) {
 		BM_mesh_free(bm);
@@ -318,9 +324,11 @@ static bool do_other_output(DerivedMesh** other_dm, Shard** other, DerivedMesh**
 		*other = BKE_create_fracture_shard((*other_dm)->getVertArray(*other_dm),
 											(*other_dm)->getPolyArray(*other_dm),
 											(*other_dm)->getLoopArray(*other_dm),
+											(*other_dm)->getEdgeArray(*other_dm),
 											(*other_dm)->getNumVerts(*other_dm),
 											(*other_dm)->getNumPolys(*other_dm),
 											(*other_dm)->getNumLoops(*other_dm),
+											(*other_dm)->getNumEdges(*other_dm),
 											 true);
 
 		*other = BKE_custom_data_to_shard(*other, *other_dm);
@@ -331,7 +339,7 @@ static bool do_other_output(DerivedMesh** other_dm, Shard** other, DerivedMesh**
 		output_s->neighbor_ids = MEM_mallocN(sizeof(int) * child->neighbor_count, __func__);
 		memcpy(output_s->neighbor_ids, child->neighbor_ids, sizeof(int) * child->neighbor_count);
 	#endif
-		BKE_fracture_shard_center_centroid(*other, (*other)->centroid);
+		BKE_fracture_shard_center_centroid_area(*other, (*other)->centroid);
 
 		/* free the temp derivedmesh */
 		(*other_dm)->needsFree = 1;
@@ -374,9 +382,11 @@ static Shard *do_output_shard_dm(DerivedMesh** output_dm, Shard *child, int num_
 	Shard* output_s = BKE_create_fracture_shard((*output_dm)->getVertArray(*output_dm),
 	                                     (*output_dm)->getPolyArray(*output_dm),
 	                                     (*output_dm)->getLoopArray(*output_dm),
+	                                     (*output_dm)->getEdgeArray(*output_dm),
 	                                     (*output_dm)->getNumVerts(*output_dm),
 	                                     (*output_dm)->getNumPolys(*output_dm),
 	                                     (*output_dm)->getNumLoops(*output_dm),
+	                                     (*output_dm)->getNumEdges(*output_dm),
 	                                     true);
 
 	output_s = BKE_custom_data_to_shard(output_s, *output_dm);
@@ -391,7 +401,7 @@ static Shard *do_output_shard_dm(DerivedMesh** output_dm, Shard *child, int num_
 		output_s->raw_volume = child->raw_volume;
 	}
 
-	BKE_fracture_shard_center_centroid(output_s, output_s->centroid);
+	BKE_fracture_shard_center_centroid_area(output_s, output_s->centroid);
 
 	/* free the temp derivedmesh */
 	(*output_dm)->needsFree = 1;
@@ -401,19 +411,20 @@ static Shard *do_output_shard_dm(DerivedMesh** output_dm, Shard *child, int num_
 	return output_s;
 }
 
-static BMesh* do_fractal(float radius, float mat[4][4], bool use_smooth_inner, short inner_material_index,
-                         int num_levels, int num_cuts, float fractal, DerivedMesh** left_dm)
+static DerivedMesh* do_fractal(float radius, float mat[4][4], bool use_smooth_inner, short inner_material_index,
+                         int num_levels, int num_cuts, float fractal)
 {
 	BMFace* f;
 	BMIter iter;
 	BMesh *bm;
 	int i;
+	DerivedMesh *ret = NULL;
 
 	/*create a grid plane */
-	bm = BM_mesh_create(&bm_mesh_allocsize_default);
+	bm = BM_mesh_create(&bm_mesh_allocsize_default,  &((struct BMeshCreateParams){.use_toolflags = true,}));
 	BMO_op_callf(bm, (BMO_FLAG_DEFAULTS & ~BMO_FLAG_RESPECT_HIDE),
 	        "create_grid x_segments=%i y_segments=%i size=%f matrix=%m4",
-	        1, 1, radius*1.4, mat);
+	        1, 1, radius, mat);
 
 	/*subdivide the plane fractally*/
 	for (i = 0; i < num_levels; i++)
@@ -437,6 +448,9 @@ static BMesh* do_fractal(float radius, float mat[4][4], bool use_smooth_inner, s
 	}
 
 	BMO_op_callf(bm, (BMO_FLAG_DEFAULTS & ~BMO_FLAG_RESPECT_HIDE),
+	        "triangulate faces=af quad_method=%i ngon_method=%i", MOD_TRIANGULATE_QUAD_BEAUTY, MOD_TRIANGULATE_NGON_BEAUTY);
+
+	BMO_op_callf(bm, (BMO_FLAG_DEFAULTS & ~BMO_FLAG_RESPECT_HIDE),
 	        "recalc_face_normals faces=af");
 
 	BM_ITER_MESH(f, &iter, bm, BM_FACES_OF_MESH)
@@ -453,9 +467,10 @@ static BMesh* do_fractal(float radius, float mat[4][4], bool use_smooth_inner, s
 	}
 
 	/*convert back*/
-	*left_dm = CDDM_from_bmesh(bm, true);
+	ret = CDDM_from_bmesh(bm, false);
+	BM_mesh_free(bm);
 
-	return bm;
+	return ret;
 }
 
 static bool do_check_watertight_other(DerivedMesh **other_dm, DerivedMesh **output_dm, Shard **other, DerivedMesh *right_dm,
@@ -493,7 +508,7 @@ static bool do_check_watertight_other(DerivedMesh **other_dm, DerivedMesh **outp
 	return do_return;
 }
 
-static bool do_check_watertight(DerivedMesh **output_dm, BMesh** bm, DerivedMesh** left_dm, DerivedMesh *right_dm, Shard **other, float mat[4][4])
+static bool do_check_watertight(DerivedMesh **output_dm, DerivedMesh** left_dm, DerivedMesh *right_dm, Shard **other, float mat[4][4])
 {
 	bool do_return = false;
 
@@ -502,10 +517,6 @@ static bool do_check_watertight(DerivedMesh **output_dm, BMesh** bm, DerivedMesh
 		{
 			if (other != NULL)
 				*other = NULL;
-			if (*bm != NULL) {
-				BM_mesh_free(*bm);
-				*bm = NULL;
-			}
 
 			if (*left_dm != NULL) {
 				(*left_dm)->needsFree = 1;
@@ -529,10 +540,13 @@ static bool do_check_watertight(DerivedMesh **output_dm, BMesh** bm, DerivedMesh
 	return do_return;
 }
 
-static void do_set_inner_material(Shard **other, float mat[4][4], DerivedMesh* left_dm, short inner_material_index, Shard* s)
+static void do_set_inner_material(Shard **other, float mat[4][4], DerivedMesh* left_dm, short inner_material_index, Shard* s, Object *ob)
 {
 	MPoly *mpoly, *mp;
 	int totpoly, i = 0;
+	MDeformVert *dvert;
+	int totvert = left_dm->getNumVerts(left_dm);
+	FractureModifierData *fmd = (FractureModifierData*)modifiers_findByType(ob, eModifierType_Fracture);
 
 	/* set inner material on child shard */
 	if (other == NULL || mat == NULL)
@@ -548,44 +562,59 @@ static void do_set_inner_material(Shard **other, float mat[4][4], DerivedMesh* l
 			s->mpoly[i].flag |= ME_FACE_SEL;
 		}
 	}
+
+	if (fmd && fmd->inner_defgrp_name[0]) {
+		int defgrp = defgroup_name_index(ob, fmd->inner_defgrp_name);
+		dvert = CustomData_add_layer(&left_dm->vertData, CD_MDEFORMVERT, CD_CALLOC, NULL, totvert);
+		for (i = 0; i < totvert; i++) {
+			defvert_add_index_notest(dvert + i, defgrp, 1.0f);
+		}
+	}
 }
 
 Shard *BKE_fracture_shard_boolean(Object *obj, DerivedMesh *dm_parent, Shard *child, short inner_material_index,
                                   int num_cuts, float fractal, Shard** other, float mat[4][4], float radius,
-                                  bool use_smooth_inner, int num_levels, char uv_layer[64])
+                                  bool use_smooth_inner, int num_levels, char uv_layer[64], int solver, float thresh)
 {
 	DerivedMesh *left_dm = NULL, *right_dm, *output_dm, *other_dm;
-	BMesh* bm = NULL;
-
 	if (other != NULL && mat != NULL)
 	{
-		bm = do_fractal(radius, mat, use_smooth_inner, inner_material_index, num_levels, num_cuts, fractal, &left_dm);
+		left_dm = do_fractal(radius, mat, use_smooth_inner, inner_material_index, num_levels, num_cuts, fractal);
+		unwrap_shard_dm(left_dm, uv_layer, false);
 	}
 	else
 	{
 		left_dm = BKE_shard_create_dm(child, false);
-		//unwrap_shard_dm(left_dm);
+		unwrap_shard_dm(left_dm, uv_layer, true);
 	}
 
-	unwrap_shard_dm(left_dm, uv_layer);
-
-	do_set_inner_material(other, mat, left_dm, inner_material_index, child);
+	do_set_inner_material(other, mat, left_dm, inner_material_index, child, obj);
 
 	right_dm = dm_parent;
-	output_dm = NewBooleanDerivedMesh(right_dm, obj, left_dm, obj, 1); /*1 == intersection, 3 == difference*/
+
+	if (solver == eBooleanModifierSolver_Carve)
+	{
+		output_dm = NewBooleanDerivedMesh(right_dm, obj, left_dm, obj, 1); /*1 == intersection, 3 == difference*/
+	}
+	else {
+		output_dm = NewBooleanDerivedMeshBMesh(right_dm, obj, left_dm, obj, 0, thresh); /*0 == intersection, 2 == difference*/
+	}
 
 	/*check for watertightness, but for fractal only*/
-	if (other != NULL && do_check_watertight(&output_dm, &bm, &left_dm, right_dm, other, mat))
+	if (other != NULL && do_check_watertight(&output_dm, &left_dm, right_dm, other, mat))
 	{
 		return NULL;
 	}
 
 	if (other != NULL)
 	{
-		if (bm != NULL)
-			BM_mesh_free(bm);
-
-		other_dm = NewBooleanDerivedMesh(left_dm, obj, right_dm, obj, 3);
+		if (solver == eBooleanModifierSolver_Carve)
+		{
+			other_dm = NewBooleanDerivedMesh(left_dm, obj, right_dm, obj, 3);
+		}
+		else {
+			other_dm = NewBooleanDerivedMeshBMesh(left_dm, obj, right_dm, obj, 2, thresh);
+		}
 
 		/*check for watertightness again, true means do return NULL here*/
 		if (!other_dm || do_check_watertight_other(&other_dm, &output_dm, other, right_dm, &left_dm, mat))
@@ -600,7 +629,7 @@ Shard *BKE_fracture_shard_boolean(Object *obj, DerivedMesh *dm_parent, Shard *ch
 
 				if (output_dm) {
 					output_dm->needsFree = 1;
-					output_dm->release(left_dm);
+					output_dm->release(output_dm);
 					output_dm = NULL;
 				}
 			}
@@ -646,9 +675,11 @@ static Shard *do_output_shard(BMesh* bm_parent, Shard *child, char uv_layer[64])
 		output_s = BKE_create_fracture_shard(dm_out->getVertArray(dm_out),
 											 dm_out->getPolyArray(dm_out),
 											 dm_out->getLoopArray(dm_out),
+		                                     dm_out->getEdgeArray(dm_out),
 											 dm_out->getNumVerts(dm_out),
 											 dm_out->getNumPolys(dm_out),
-											 dm_out->getNumLoops(dm_out), true);
+											 dm_out->getNumLoops(dm_out),
+											 dm_out->getNumEdges(dm_out), true);
 
 		output_s = BKE_custom_data_to_shard(output_s, dm_out);
 
@@ -656,7 +687,7 @@ static Shard *do_output_shard(BMesh* bm_parent, Shard *child, char uv_layer[64])
 		output_s->neighbor_count = child->neighbor_count;
 		output_s->neighbor_ids = MEM_mallocN(sizeof(int) * child->neighbor_count, __func__);
 		memcpy(output_s->neighbor_ids, child->neighbor_ids, sizeof(int) * child->neighbor_count);
-		BKE_fracture_shard_center_centroid(output_s, output_s->centroid);
+		BKE_fracture_shard_center_centroid_area(output_s, output_s->centroid);
 		copy_v3_v3(output_s->raw_centroid, child->raw_centroid);
 		output_s->raw_volume = child->raw_volume;
 
@@ -719,7 +750,7 @@ static void do_fill(float plane_no[3], bool clear_outer, bool clear_inner, BMOpe
 }
 
 static void do_bisect(BMesh* bm_parent, BMesh* bm_child, float obmat[4][4], bool use_fill, bool clear_inner,
-               bool clear_outer, int cutlimit, float centroid[3], short inner_mat_index)
+               bool clear_outer, int cutlimit, float centroid[3], short inner_mat_index, float normal[3])
 {
 	BMIter iter;
 	BMFace *f;
@@ -742,10 +773,12 @@ static void do_bisect(BMesh* bm_parent, BMesh* bm_child, float obmat[4][4], bool
 		}
 
 		if (cutlimit > -1) {
-			f = BM_face_at_index_find(bm_child, cutlimit);
+			//f = BM_face_at_index_find(bm_child, cutlimit);
 			copy_v3_v3(plane_co, centroid);
-			copy_v3_v3(plane_no, f->no /*normal*/);
+			copy_v3_v3(plane_no, normal); //f->no /*normal*/);
 			do_break = true;
+
+			//mul_qt_v3(quat, plane_no);
 		}
 		else {
 			copy_v3_v3(plane_co, f->l_first->v->co);
@@ -779,7 +812,7 @@ static BMesh *do_preselection(BMesh* bm_orig, Shard *child, KDTree *preselect_tr
 	int i = 0, r = 0;
 	float max_dist = 0;
 	KDTreeNearest* n = NULL;
-	BMesh *bm_new = BM_mesh_create(&bm_mesh_allocsize_default);
+	BMesh *bm_new = BM_mesh_create(&bm_mesh_allocsize_default, &((struct BMeshCreateParams){.use_toolflags = true,}));
 	BMIter iter;
 	BMFace *f;
 #define MY_TAG (1 << 6)
@@ -874,7 +907,7 @@ static BMesh *do_preselection(BMesh* bm_orig, Shard *child, KDTree *preselect_tr
 
 Shard *BKE_fracture_shard_bisect(BMesh *bm_orig, Shard *child, float obmat[4][4], bool use_fill, bool clear_inner,
                                  bool clear_outer, int cutlimit, float centroid[3], short inner_mat_index, char uv_layer[64],
-                                 KDTree *preselect_tree)
+                                 KDTree *preselect_tree, float normal[3])
 {
 
 	Shard *output_s;
@@ -883,8 +916,10 @@ Shard *BKE_fracture_shard_bisect(BMesh *bm_orig, Shard *child, float obmat[4][4]
 	BMesh *bm_parent;
 	BMesh *bm_child;
 
-	unwrap_shard_dm(dm_child, uv_layer);
-	bm_child = DM_to_bmesh(dm_child, true);
+	unwrap_shard_dm(dm_child, uv_layer, true);
+
+	bm_child = BM_mesh_create(&bm_mesh_allocsize_default,  &((struct BMeshCreateParams){.use_toolflags = true,}));
+	DM_to_bmesh_ex(dm_child, bm_child, true);
 
 	//hmmm need to copy only preselection !!! or rebuild bm_parent from selected data only....
 	if (preselect_tree != NULL) {
@@ -896,7 +931,7 @@ Shard *BKE_fracture_shard_bisect(BMesh *bm_orig, Shard *child, float obmat[4][4]
 
 	if (bm_parent != NULL) {
 		BM_mesh_elem_hflag_enable_all(bm_parent, BM_VERT | BM_EDGE | BM_FACE, BM_ELEM_TAG, false);
-		do_bisect(bm_parent, bm_child, obmat, use_fill, clear_inner, clear_outer, cutlimit, centroid, inner_mat_index);
+		do_bisect(bm_parent, bm_child, obmat, use_fill, clear_inner, clear_outer, cutlimit, centroid, inner_mat_index, normal);
 		output_s = do_output_shard(bm_parent, child, uv_layer);
 		BM_mesh_free(bm_parent);
 	}

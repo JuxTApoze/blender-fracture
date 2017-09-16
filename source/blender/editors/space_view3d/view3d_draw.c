@@ -103,11 +103,13 @@
 #include "GPU_material.h"
 #include "GPU_compositing.h"
 #include "GPU_extensions.h"
+#include "GPU_select.h"
 
 #include "view3d_intern.h"  /* own include */
 
 /* prototypes */
-static void view3d_stereo3d_setup(Scene *scene, View3D *v3d, ARegion *ar);
+static bool view3d_stereo3d_active(wmWindow *win, Scene *scene, View3D *v3d, RegionView3D *rv3d);
+static void view3d_stereo3d_setup(Scene *scene, View3D *v3d, ARegion *ar, const rcti *rect);
 static void view3d_stereo3d_setup_offscreen(Scene *scene, View3D *v3d, ARegion *ar,
                                             float winmat[4][4], const char *viewname);
 
@@ -318,12 +320,12 @@ static void drawgrid(UnitSettings *unit, ARegion *ar, View3D *v3d, const char **
 	if (unit->system) {
 		/* Use GRID_MIN_PX * 2 for units because very very small grid
 		 * items are less useful when dealing with units */
-		void *usys;
+		const void *usys;
 		int len, i;
 		double dx_scalar;
 		float blend_fac;
 
-		bUnit_GetSystem(&usys, &len, unit->system, B_UNIT_LENGTH);
+		bUnit_GetSystem(unit->system, B_UNIT_LENGTH, &usys, &len);
 
 		if (usys) {
 			i = len;
@@ -458,10 +460,10 @@ float ED_scene_grid_scale(Scene *scene, const char **grid_unit)
 {
 	/* apply units */
 	if (scene->unit.system) {
-		void *usys;
+		const void *usys;
 		int len;
 
-		bUnit_GetSystem(&usys, &len, scene->unit.system, B_UNIT_LENGTH);
+		bUnit_GetSystem(scene->unit.system, B_UNIT_LENGTH, &usys, &len);
 
 		if (usys) {
 			int i = bUnit_GetBaseUnit(usys);
@@ -648,6 +650,7 @@ static void draw_view_axis(RegionView3D *rv3d, rcti *rect)
 	glDisable(GL_BLEND);
 }
 
+#ifdef WITH_INPUT_NDOF
 /* draw center and axis of rotation for ongoing 3D mouse navigation */
 static void draw_rotation_guide(RegionView3D *rv3d)
 {
@@ -660,7 +663,6 @@ static void draw_rotation_guide(RegionView3D *rv3d)
 
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glShadeModel(GL_SMOOTH);
 	glPointSize(5);
 	glEnable(GL_POINT_SMOOTH);
 	glDepthMask(0);  /* don't overwrite zbuf */
@@ -753,6 +755,7 @@ static void draw_rotation_guide(RegionView3D *rv3d)
 	glDisable(GL_POINT_SMOOTH);
 	glDepthMask(1);
 }
+#endif /* WITH_INPUT_NDOF */
 
 static void draw_view_icon(RegionView3D *rv3d, rcti *rect)
 {
@@ -953,9 +956,11 @@ static void draw_selected_name(Scene *scene, Object *ob, rcti *rect)
 			UI_ThemeColor(TH_TEXT_HI);
 	}
 	else {
-		/* no object */		
-		/* color is always white */
-		UI_ThemeColor(TH_TEXT_HI);
+		/* no object */
+		if (ED_gpencil_has_keyframe_v3d(scene, NULL, cfra))
+			UI_ThemeColor(TH_TIME_GP_KEYFRAME);
+		else
+			UI_ThemeColor(TH_TEXT_HI);
 	}
 
 	if (markern) {
@@ -1113,6 +1118,8 @@ static void drawviewborder(Scene *scene, ARegion *ar, View3D *v3d)
 	x2 = viewborder.xmax;
 	y2 = viewborder.ymax;
 	
+	glLineWidth(1.0f);
+
 	/* apply offsets so the real 3D camera shows through */
 
 	/* note: quite un-scientific but without this bit extra
@@ -1138,7 +1145,6 @@ static void drawviewborder(Scene *scene, ARegion *ar, View3D *v3d)
 			glEnable(GL_BLEND);
 			glColor4f(0, 0, 0, ca->passepartalpha);
 		}
-		glLineWidth(1.0f);
 
 		if (x1i > 0.0f)
 			glRectf(0.0, winy, x1i, 0.0);
@@ -1181,10 +1187,10 @@ static void drawviewborder(Scene *scene, ARegion *ar, View3D *v3d)
 	if (scene->r.mode & R_BORDER) {
 		float x3, y3, x4, y4;
 
-		x3 = x1i + 1 + roundf(scene->r.border.xmin * (x2 - x1));
-		y3 = y1i + 1 + roundf(scene->r.border.ymin * (y2 - y1));
-		x4 = x1i + 1 + roundf(scene->r.border.xmax * (x2 - x1));
-		y4 = y1i + 1 + roundf(scene->r.border.ymax * (y2 - y1));
+		x3 = floorf(x1 + (scene->r.border.xmin * (x2 - x1))) - 1;
+		y3 = floorf(y1 + (scene->r.border.ymin * (y2 - y1))) - 1;
+		x4 = floorf(x1 + (scene->r.border.xmax * (x2 - x1))) + (U.pixelsize - 1);
+		y4 = floorf(y1 + (scene->r.border.ymax * (y2 - y1))) + (U.pixelsize - 1);
 
 		cpack(0x4040FF);
 		sdrawbox(x3,  y3,  x4,  y4);
@@ -1491,7 +1497,7 @@ unsigned int ED_view3d_backbuf_sample(ViewContext *vc, int x, int y)
 		BLI_endian_switch_uint32(&col);
 	}
 	
-	return WM_framebuffer_to_index(col);
+	return GPU_select_to_index(col);
 }
 
 /* reads full rect, converts indices */
@@ -1524,7 +1530,7 @@ ImBuf *ED_view3d_backbuf_read(ViewContext *vc, int xmin, int ymin, int xmax, int
 		IMB_convert_rgba_to_abgr(ibuf_clip);
 	}
 
-	WM_framebuffer_to_index_array(ibuf_clip->rect, size_clip[0] * size_clip[1]);
+	GPU_select_to_index_array(ibuf_clip->rect, size_clip[0] * size_clip[1]);
 	
 	if ((clip.xmin == xmin) &&
 	    (clip.xmax == xmax) &&
@@ -2022,6 +2028,35 @@ static void view3d_draw_xraytransp(Scene *scene, ARegion *ar, View3D *v3d, const
 	glDepthMask(GL_TRUE);
 }
 
+/* clears zbuffer and draws it over,
+ * note that in the select version we don't care about transparent flag as with regular drawing */
+static void view3d_draw_xray_select(Scene *scene, ARegion *ar, View3D *v3d, bool *clear)
+{
+	/* Not ideal, but we need to read from the previous depths before clearing
+	 * otherwise we could have a function to load the depths after drawing.
+	 *
+	 * Clearing the depth buffer isn't all that common between drawing objects so accept this for now.
+	 */
+	if (U.gpu_select_pick_deph) {
+		GPU_select_load_id(-1);
+	}
+
+	View3DAfter *v3da;
+	if (*clear && v3d->zbuf) {
+		glClear(GL_DEPTH_BUFFER_BIT);
+		*clear = false;
+	}
+
+	v3d->xray = true;
+	while ((v3da = BLI_pophead(&v3d->afterdraw_xray))) {
+		if (GPU_select_load_id(v3da->base->selcol)) {
+			draw_object_select(scene, ar, v3d, v3da->base, v3da->dflag);
+		}
+		MEM_freeN(v3da);
+	}
+	v3d->xray = false;
+}
+
 /* *********************** */
 
 /*
@@ -2340,16 +2375,10 @@ void ED_view3d_draw_depth_gpencil(Scene *scene, ARegion *ar, View3D *v3d)
 	short zbuf = v3d->zbuf;
 	RegionView3D *rv3d = ar->regiondata;
 
-	view3d_winmatrix_set(ar, v3d, NULL);
-	view3d_viewmatrix_set(scene, v3d, rv3d);  /* note: calls BKE_object_where_is_calc for camera... */
-
-	mul_m4_m4m4(rv3d->persmat, rv3d->winmat, rv3d->viewmat);
-	invert_m4_m4(rv3d->persinv, rv3d->persmat);
-	invert_m4_m4(rv3d->viewinv, rv3d->viewmat);
+	/* Setup view matrix. */
+	ED_view3d_draw_setup_view(NULL, scene, ar, v3d, rv3d->viewmat, rv3d->winmat, NULL);
 
 	glClear(GL_DEPTH_BUFFER_BIT);
-
-	glLoadMatrixf(rv3d->viewmat);
 
 	v3d->zbuf = true;
 	glEnable(GL_DEPTH_TEST);
@@ -2359,46 +2388,15 @@ void ED_view3d_draw_depth_gpencil(Scene *scene, ARegion *ar, View3D *v3d)
 	}
 	
 	v3d->zbuf = zbuf;
-
 }
 
-void ED_view3d_draw_depth(Scene *scene, ARegion *ar, View3D *v3d, bool alphaoverride)
+static void view3d_draw_depth_loop(Scene *scene, ARegion *ar, View3D *v3d)
 {
-	RegionView3D *rv3d = ar->regiondata;
 	Base *base;
-	short zbuf = v3d->zbuf;
-	short flag = v3d->flag;
-	float glalphaclip = U.glalphaclip;
-	int obcenter_dia = U.obcenter_dia;
+
 	/* no need for color when drawing depth buffer */
 	const short dflag_depth = DRAW_CONSTCOLOR;
-	/* temp set drawtype to solid */
-	
-	/* Setting these temporarily is not nice */
-	v3d->flag &= ~V3D_SELECT_OUTLINE;
-	U.glalphaclip = alphaoverride ? 0.5f : glalphaclip; /* not that nice but means we wont zoom into billboards */
-	U.obcenter_dia = 0;
-	
-	view3d_winmatrix_set(ar, v3d, NULL);
-	view3d_viewmatrix_set(scene, v3d, rv3d);  /* note: calls BKE_object_where_is_calc for camera... */
-	
-	mul_m4_m4m4(rv3d->persmat, rv3d->winmat, rv3d->viewmat);
-	invert_m4_m4(rv3d->persinv, rv3d->persmat);
-	invert_m4_m4(rv3d->viewinv, rv3d->viewmat);
-	
-	glClear(GL_DEPTH_BUFFER_BIT);
-	
-	glLoadMatrixf(rv3d->viewmat);
-	
-	if (rv3d->rflag & RV3D_CLIPPING) {
-		ED_view3d_clipping_set(rv3d);
-	}
-	/* get surface depth without bias */
-	rv3d->rflag |= RV3D_ZOFFSET_DISABLED;
 
-	v3d->zbuf = true;
-	glEnable(GL_DEPTH_TEST);
-	
 	/* draw set first */
 	if (scene->set) {
 		Scene *sce_iter;
@@ -2472,7 +2470,38 @@ void ED_view3d_draw_depth(Scene *scene, ARegion *ar, View3D *v3d, bool alphaover
 
 		glDepthMask(mask_orig);
 	}
+}
+
+void ED_view3d_draw_depth(Scene *scene, ARegion *ar, View3D *v3d, bool alphaoverride)
+{
+	RegionView3D *rv3d = ar->regiondata;
+	short zbuf = v3d->zbuf;
+	short flag = v3d->flag;
+	float glalphaclip = U.glalphaclip;
+	int obcenter_dia = U.obcenter_dia;
+	/* temp set drawtype to solid */
 	
+	/* Setting these temporarily is not nice */
+	v3d->flag &= ~V3D_SELECT_OUTLINE;
+	U.glalphaclip = alphaoverride ? 0.5f : glalphaclip; /* not that nice but means we wont zoom into billboards */
+	U.obcenter_dia = 0;
+	
+	/* Setup view matrix. */
+	ED_view3d_draw_setup_view(NULL, scene, ar, v3d, rv3d->viewmat, rv3d->winmat, NULL);
+	
+	glClear(GL_DEPTH_BUFFER_BIT);
+	
+	if (rv3d->rflag & RV3D_CLIPPING) {
+		ED_view3d_clipping_set(rv3d);
+	}
+	/* get surface depth without bias */
+	rv3d->rflag |= RV3D_ZOFFSET_DISABLED;
+
+	v3d->zbuf = true;
+	glEnable(GL_DEPTH_TEST);
+
+	view3d_draw_depth_loop(scene, ar, v3d);
+
 	if (rv3d->rflag & RV3D_CLIPPING) {
 		ED_view3d_clipping_disable();
 	}
@@ -2484,6 +2513,58 @@ void ED_view3d_draw_depth(Scene *scene, ARegion *ar, View3D *v3d, bool alphaover
 	U.glalphaclip = glalphaclip;
 	v3d->flag = flag;
 	U.obcenter_dia = obcenter_dia;
+}
+
+void ED_view3d_draw_select_loop(
+        ViewContext *vc, Scene *scene, View3D *v3d, ARegion *ar,
+        bool use_obedit_skip, bool use_nearest)
+{
+	short code = 1;
+	const short dflag = DRAW_PICKING | DRAW_CONSTCOLOR;
+
+	if (vc->obedit && vc->obedit->type == OB_MBALL) {
+		draw_object(scene, ar, v3d, BASACT, dflag);
+	}
+	else if ((vc->obedit && vc->obedit->type == OB_ARMATURE)) {
+		/* if not drawing sketch, draw bones */
+		if (!BDR_drawSketchNames(vc)) {
+			draw_object(scene, ar, v3d, BASACT, dflag);
+		}
+	}
+	else {
+		Base *base;
+
+		for (base = scene->base.first; base; base = base->next) {
+			if (base->lay & v3d->lay) {
+
+				if ((base->object->restrictflag & OB_RESTRICT_SELECT) ||
+				    (use_obedit_skip && (scene->obedit->data == base->object->data)))
+				{
+					base->selcol = 0;
+				}
+				else {
+					base->selcol = code;
+
+					if (use_nearest && (base->object->dtx & OB_DRAWXRAY)) {
+						ED_view3d_after_add(&v3d->afterdraw_xray, base, dflag);
+					}
+					else {
+						if (GPU_select_load_id(code)) {
+							draw_object_select(scene, ar, v3d, base, dflag);
+						}
+					}
+					code++;
+				}
+			}
+		}
+
+		if (use_nearest) {
+			bool xrayclear = true;
+			if (v3d->afterdraw_xray.first) {
+				view3d_draw_xray_select(scene, ar, v3d, &xrayclear);
+			}
+		}
+	}
 }
 
 typedef struct View3DShadow {
@@ -2602,6 +2683,7 @@ static void gpu_update_lamps_shadows_world(Scene *scene, View3D *v3d)
 		GPU_mist_update_values(world->mistype, world->miststa, world->mistdist, world->misi, &world->horr);
 		GPU_horizon_update_color(&world->horr);
 		GPU_ambient_update_color(&world->ambr);
+		GPU_zenith_update_color(&world->zenr);
 	}
 }
 
@@ -2610,19 +2692,20 @@ static void gpu_update_lamps_shadows_world(Scene *scene, View3D *v3d)
 CustomDataMask ED_view3d_datamask(const Scene *scene, const View3D *v3d)
 {
 	CustomDataMask mask = 0;
+	const int drawtype = view3d_effective_drawtype(v3d);
 
-	if (ELEM(v3d->drawtype, OB_TEXTURE, OB_MATERIAL) ||
-	    ((v3d->drawtype == OB_SOLID) && (v3d->flag2 & V3D_SOLID_TEX)))
+	if (ELEM(drawtype, OB_TEXTURE, OB_MATERIAL) ||
+	    ((drawtype == OB_SOLID) && (v3d->flag2 & V3D_SOLID_TEX)))
 	{
 		mask |= CD_MASK_MTEXPOLY | CD_MASK_MLOOPUV | CD_MASK_MLOOPCOL;
 
 		if (BKE_scene_use_new_shading_nodes(scene)) {
-			if (v3d->drawtype == OB_MATERIAL)
+			if (drawtype == OB_MATERIAL)
 				mask |= CD_MASK_ORCO;
 		}
 		else {
-			if ((scene->gm.matmode == GAME_MAT_GLSL && v3d->drawtype == OB_TEXTURE) || 
-			    (v3d->drawtype == OB_MATERIAL))
+			if ((scene->gm.matmode == GAME_MAT_GLSL && drawtype == OB_TEXTURE) || 
+			    (drawtype == OB_MATERIAL))
 			{
 				mask |= CD_MASK_ORCO;
 			}
@@ -2652,16 +2735,16 @@ CustomDataMask ED_view3d_screen_datamask(const bScreen *screen)
 /**
  * \note keep this synced with #ED_view3d_mats_rv3d_backup/#ED_view3d_mats_rv3d_restore
  */
-void ED_view3d_update_viewmat(Scene *scene, View3D *v3d, ARegion *ar, float viewmat[4][4], float winmat[4][4])
+void ED_view3d_update_viewmat(
+        Scene *scene, View3D *v3d, ARegion *ar, float viewmat[4][4], float winmat[4][4], const rcti *rect)
 {
 	RegionView3D *rv3d = ar->regiondata;
-	rctf cameraborder;
 
 	/* setup window matrices */
 	if (winmat)
 		copy_m4_m4(rv3d->winmat, winmat);
 	else
-		view3d_winmatrix_set(ar, v3d, NULL);
+		view3d_winmatrix_set(ar, v3d, rect);
 
 	/* setup view matrix */
 	if (viewmat)
@@ -2669,7 +2752,7 @@ void ED_view3d_update_viewmat(Scene *scene, View3D *v3d, ARegion *ar, float view
 	else
 		view3d_viewmatrix_set(scene, v3d, rv3d);  /* note: calls BKE_object_where_is_calc for camera... */
 
-	/* update utilitity matrices */
+	/* update utility matrices */
 	mul_m4_m4m4(rv3d->persmat, rv3d->winmat, rv3d->viewmat);
 	invert_m4_m4(rv3d->persinv, rv3d->persmat);
 	invert_m4_m4(rv3d->viewinv, rv3d->viewmat);
@@ -2678,6 +2761,7 @@ void ED_view3d_update_viewmat(Scene *scene, View3D *v3d, ARegion *ar, float view
 
 	/* store window coordinates scaling/offset */
 	if (rv3d->persp == RV3D_CAMOB && v3d->camera) {
+		rctf cameraborder;
 		ED_view3d_calc_camera_border(scene, ar, v3d, rv3d, &cameraborder, false);
 		rv3d->viewcamtexcofac[0] = (float)ar->winx / BLI_rctf_size_x(&cameraborder);
 		rv3d->viewcamtexcofac[1] = (float)ar->winy / BLI_rctf_size_y(&cameraborder);
@@ -2689,8 +2773,17 @@ void ED_view3d_update_viewmat(Scene *scene, View3D *v3d, ARegion *ar, float view
 		rv3d->viewcamtexcofac[0] = rv3d->viewcamtexcofac[1] = 1.0f;
 		rv3d->viewcamtexcofac[2] = rv3d->viewcamtexcofac[3] = 0.0f;
 	}
-	
-	/* calculate pixelsize factor once, is used for lamps and obcenters */
+
+	/**
+	 * Calculate pixel-size factor once, is used for lamps and object centers.
+	 * Used by #ED_view3d_pixel_size and typically not accessed directly.
+	 *
+	 * \note #BKE_camera_params_compute_viewplane' also calculates a pixel-size value,
+	 * passed to #RE_SetPixelSize, in ortho mode this is compatible with this value,
+	 * but in perspective mode its offset by the near-clip.
+	 *
+	 * 'RegionView3D.pixsize' is used for viewport drawing, not rendering.
+	 */
 	{
 		/* note:  '1.0f / len_v3(v1)'  replaced  'len_v3(rv3d->viewmat[0])'
 		 * because of float point precision problems at large values [#23908] */
@@ -2716,7 +2809,7 @@ void view3d_draw_string(float loc[3], const char *str, const size_t len, float c
 {
 	// why is this char[] vs char* stuff necessary here ?
 	unsigned char col[3];
-	rgba_float_to_uchar(col , color);
+	rgb_float_to_uchar(col , color);
 	view3d_cached_text_draw_add(loc, str, len, 0, V3D_CACHE_TEXT_ASCII | V3D_CACHE_TEXT_GLOBALSPACE , col);
 }
 
@@ -2859,7 +2952,7 @@ static void view3d_draw_objects(
 			{
 				view3d_cached_text_draw_begin();
 				RB_dworld_debug_draw(rbw->physics_world, view3d_draw_string);
-				view3d_cached_text_draw_end(v3d, ar, 0, NULL);
+				view3d_cached_text_draw_end(v3d, ar, 0);
 			}
 		}
 
@@ -2934,11 +3027,12 @@ static void view3d_draw_objects(
 	}
 }
 
-static void view3d_main_region_setup_view(Scene *scene, View3D *v3d, ARegion *ar, float viewmat[4][4], float winmat[4][4])
+static void view3d_main_region_setup_view(
+        Scene *scene, View3D *v3d, ARegion *ar, float viewmat[4][4], float winmat[4][4], const rcti *rect)
 {
 	RegionView3D *rv3d = ar->regiondata;
 
-	ED_view3d_update_viewmat(scene, v3d, ar, viewmat, winmat);
+	ED_view3d_update_viewmat(scene, v3d, ar, viewmat, winmat, rect);
 
 	/* set for opengl */
 	glMatrixMode(GL_PROJECTION);
@@ -2963,7 +3057,7 @@ struct RV3DMatrixStore {
 	float pixsize;
 };
 
-void *ED_view3d_mats_rv3d_backup(struct RegionView3D *rv3d)
+struct RV3DMatrixStore *ED_view3d_mats_rv3d_backup(struct RegionView3D *rv3d)
 {
 	struct RV3DMatrixStore *rv3dmat = MEM_mallocN(sizeof(*rv3dmat), __func__);
 	copy_m4_m4(rv3dmat->winmat, rv3d->winmat);
@@ -2976,9 +3070,8 @@ void *ED_view3d_mats_rv3d_backup(struct RegionView3D *rv3d)
 	return (void *)rv3dmat;
 }
 
-void ED_view3d_mats_rv3d_restore(struct RegionView3D *rv3d, void *rv3dmat_pt)
+void ED_view3d_mats_rv3d_restore(struct RegionView3D *rv3d, struct RV3DMatrixStore *rv3dmat)
 {
-	struct RV3DMatrixStore *rv3dmat = rv3dmat_pt;
 	copy_m4_m4(rv3d->winmat, rv3dmat->winmat);
 	copy_m4_m4(rv3d->viewmat, rv3dmat->viewmat);
 	copy_m4_m4(rv3d->persmat, rv3dmat->persmat);
@@ -3001,174 +3094,45 @@ void ED_view3d_draw_offscreen_init(Scene *scene, View3D *v3d)
 static void view3d_main_region_clear(Scene *scene, View3D *v3d, ARegion *ar)
 {
 	if (scene->world && (v3d->flag3 & V3D_SHOW_WORLD)) {
-		bool glsl = GPU_glsl_support();
-		if (glsl) {
-			RegionView3D *rv3d = ar->regiondata;
-			GPUMaterial *gpumat = GPU_material_world(scene, scene->world);
+		RegionView3D *rv3d = ar->regiondata;
+		GPUMaterial *gpumat = GPU_material_world(scene, scene->world);
 
-			/* calculate full shader for background */
-			GPU_material_bind(gpumat, 1, 1, 1.0, false, rv3d->viewmat, rv3d->viewinv, rv3d->viewcamtexcofac, (v3d->scenelock != 0));
-			
-			bool material_not_bound = !GPU_material_bound(gpumat);
+		/* calculate full shader for background */
+		GPU_material_bind(gpumat, 1, 1, 1.0, false, rv3d->viewmat, rv3d->viewinv, rv3d->viewcamtexcofac, (v3d->scenelock != 0));
+		
+		bool material_not_bound = !GPU_material_bound(gpumat);
 
-			if (material_not_bound) {
-				glMatrixMode(GL_PROJECTION);
-				glPushMatrix();
-				glLoadIdentity();
-				glMatrixMode(GL_MODELVIEW);
-				glPushMatrix();
-				glLoadIdentity();
-				glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
-			}
-
-			glEnable(GL_DEPTH_TEST);
-			glDepthFunc(GL_ALWAYS);
-			glShadeModel(GL_SMOOTH);
-			glBegin(GL_TRIANGLE_STRIP);
-			glVertex3f(-1.0, -1.0, 1.0);
-			glVertex3f(1.0, -1.0, 1.0);
-			glVertex3f(-1.0, 1.0, 1.0);
-			glVertex3f(1.0, 1.0, 1.0);
-			glEnd();
-			glShadeModel(GL_FLAT);
-
-			if (material_not_bound) {
-				glMatrixMode(GL_PROJECTION);
-				glPopMatrix();
-				glMatrixMode(GL_MODELVIEW);
-				glPopMatrix();
-			}
-
-			GPU_material_unbind(gpumat);
-			
-			glDepthFunc(GL_LEQUAL);
-			glDisable(GL_DEPTH_TEST);
-		}
-		else if (scene->world->skytype & WO_SKYBLEND) {  /* blend sky */
-			int x, y;
-			float col_hor[3];
-			float col_zen[3];
-
-#define VIEWGRAD_RES_X 16
-#define VIEWGRAD_RES_Y 16
-
-			GLubyte grid_col[VIEWGRAD_RES_X][VIEWGRAD_RES_Y][4];
-			static float grid_pos[VIEWGRAD_RES_X][VIEWGRAD_RES_Y][3];
-			static GLushort indices[VIEWGRAD_RES_X - 1][VIEWGRAD_RES_X - 1][4];
-			static bool buf_calculated = false;
-
-			IMB_colormanagement_pixel_to_display_space_v3(col_hor, &scene->world->horr, &scene->view_settings,
-			                                              &scene->display_settings);
-			IMB_colormanagement_pixel_to_display_space_v3(col_zen, &scene->world->zenr, &scene->view_settings,
-			                                              &scene->display_settings);
-
+		if (material_not_bound) {
 			glMatrixMode(GL_PROJECTION);
 			glPushMatrix();
 			glLoadIdentity();
 			glMatrixMode(GL_MODELVIEW);
 			glPushMatrix();
 			glLoadIdentity();
+			glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
+		}
 
-			glShadeModel(GL_SMOOTH);
+		/* Draw world */
+		glEnable(GL_DEPTH_TEST);
+		glDepthFunc(GL_ALWAYS);
+		glBegin(GL_TRIANGLE_STRIP);
+		glVertex3f(-1.0, -1.0, 1.0);
+		glVertex3f(1.0, -1.0, 1.0);
+		glVertex3f(-1.0, 1.0, 1.0);
+		glVertex3f(1.0, 1.0, 1.0);
+		glEnd();
 
-			/* calculate buffers the first time only */
-			if (!buf_calculated) {
-				for (x = 0; x < VIEWGRAD_RES_X; x++) {
-					for (y = 0; y < VIEWGRAD_RES_Y; y++) {
-						const float xf = (float)x / (float)(VIEWGRAD_RES_X - 1);
-						const float yf = (float)y / (float)(VIEWGRAD_RES_Y - 1);
-
-						/* -1..1 range */
-						grid_pos[x][y][0] = (xf - 0.5f) * 2.0f;
-						grid_pos[x][y][1] = (yf - 0.5f) * 2.0f;
-						grid_pos[x][y][2] = 1.0;
-					}
-				}
-
-				for (x = 0; x < VIEWGRAD_RES_X - 1; x++) {
-					for (y = 0; y < VIEWGRAD_RES_Y - 1; y++) {
-						indices[x][y][0] = x * VIEWGRAD_RES_X + y;
-						indices[x][y][1] = x * VIEWGRAD_RES_X + y + 1;
-						indices[x][y][2] = (x + 1) * VIEWGRAD_RES_X + y + 1;
-						indices[x][y][3] = (x + 1) * VIEWGRAD_RES_X + y;
-					}
-				}
-
-				buf_calculated = true;
-			}
-
-			for (x = 0; x < VIEWGRAD_RES_X; x++) {
-				for (y = 0; y < VIEWGRAD_RES_Y; y++) {
-					const float xf = (float)x / (float)(VIEWGRAD_RES_X - 1);
-					const float yf = (float)y / (float)(VIEWGRAD_RES_Y - 1);
-					const float mval[2] = {xf * (float)ar->winx, yf * ar->winy};
-					const float z_up[3] = {0.0f, 0.0f, 1.0f};
-					float out[3];
-					GLubyte *col_ub = grid_col[x][y];
-
-					float col_fac;
-					float col_fl[3];
-
-					ED_view3d_win_to_vector(ar, mval, out);
-
-					if (scene->world->skytype & WO_SKYPAPER) {
-						if (scene->world->skytype & WO_SKYREAL) {
-							col_fac = fabsf(((float)y / (float)VIEWGRAD_RES_Y) - 0.5f) * 2.0f;
-						}
-						else {
-							col_fac = (float)y / (float)VIEWGRAD_RES_Y;
-						}
-					}
-					else {
-						if (scene->world->skytype & WO_SKYREAL) {
-							col_fac = fabsf((angle_normalized_v3v3(z_up, out) / (float)M_PI) - 0.5f) * 2.0f;
-						}
-						else {
-							col_fac = 1.0f - (angle_normalized_v3v3(z_up, out) / (float)M_PI);
-						}
-					}
-
-					interp_v3_v3v3(col_fl, col_hor, col_zen, col_fac);
-
-					rgb_float_to_uchar(col_ub, col_fl);
-					col_ub[3] = 255;
-				}
-			}
-
-			glEnable(GL_DEPTH_TEST);
-			glDepthFunc(GL_ALWAYS);
-
-			glEnableClientState(GL_VERTEX_ARRAY);
-			glEnableClientState(GL_COLOR_ARRAY);
-			glVertexPointer(3, GL_FLOAT, 0, grid_pos);
-			glColorPointer(4, GL_UNSIGNED_BYTE, 0, grid_col);
-
-			glDrawElements(GL_QUADS, (VIEWGRAD_RES_X - 1) * (VIEWGRAD_RES_Y - 1) * 4, GL_UNSIGNED_SHORT, indices);
-
-			glDisableClientState(GL_VERTEX_ARRAY);
-			glDisableClientState(GL_COLOR_ARRAY);
-
-			glDepthFunc(GL_LEQUAL);
-			glDisable(GL_DEPTH_TEST);
-
+		if (material_not_bound) {
 			glMatrixMode(GL_PROJECTION);
 			glPopMatrix();
 			glMatrixMode(GL_MODELVIEW);
 			glPopMatrix();
-
-			glShadeModel(GL_FLAT);
-
-#undef VIEWGRAD_RES_X
-#undef VIEWGRAD_RES_Y
 		}
-		else {  /* solid sky */
-			float col_hor[3];
-			IMB_colormanagement_pixel_to_display_space_v3(col_hor, &scene->world->horr, &scene->view_settings,
-			                                              &scene->display_settings);
 
-			glClearColor(col_hor[0], col_hor[1], col_hor[2], 1.0);
-			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-		}
+		GPU_material_unbind(gpumat);
+		
+		glDepthFunc(GL_LEQUAL);
+		glDisable(GL_DEPTH_TEST);
 	}
 	else {
 		if (UI_GetThemeValue(TH_SHOW_BACK_GRAD)) {
@@ -3181,7 +3145,6 @@ static void view3d_main_region_clear(Scene *scene, View3D *v3d, ARegion *ar)
 
 			glEnable(GL_DEPTH_TEST);
 			glDepthFunc(GL_ALWAYS);
-			glShadeModel(GL_SMOOTH);
 			glBegin(GL_QUADS);
 			UI_ThemeColor(TH_LOW_GRAD);
 			glVertex3f(-1.0, -1.0, 1.0);
@@ -3190,8 +3153,6 @@ static void view3d_main_region_clear(Scene *scene, View3D *v3d, ARegion *ar)
 			glVertex3f(1.0, 1.0, 1.0);
 			glVertex3f(-1.0, 1.0, 1.0);
 			glEnd();
-			glShadeModel(GL_FLAT);
-
 			glDepthFunc(GL_LEQUAL);
 			glDisable(GL_DEPTH_TEST);
 
@@ -3254,7 +3215,7 @@ void ED_view3d_draw_offscreen(
 	if ((viewname != NULL && viewname[0] != '\0') && (viewmat == NULL) && rv3d->persp == RV3D_CAMOB && v3d->camera)
 		view3d_stereo3d_setup_offscreen(scene, v3d, ar, winmat, viewname);
 	else
-		view3d_main_region_setup_view(scene, v3d, ar, viewmat, winmat);
+		view3d_main_region_setup_view(scene, v3d, ar, viewmat, winmat, NULL);
 
 	/* framebuffer fx needed, we need to draw offscreen first */
 	if (v3d->fx_settings.fx_flag && fx) {
@@ -3314,6 +3275,23 @@ void ED_view3d_draw_offscreen(
 	UI_Theme_Restore(&theme_state);
 
 	G.f &= ~G_RENDER_OGL;
+}
+
+/**
+ * Set the correct matrices
+ */
+void ED_view3d_draw_setup_view(
+        wmWindow *win, Scene *scene, ARegion *ar, View3D *v3d, float viewmat[4][4], float winmat[4][4], const rcti *rect)
+{
+	RegionView3D *rv3d = ar->regiondata;
+
+	/* Setup the view matrix. */
+	if (view3d_stereo3d_active(win, scene, v3d, rv3d)) {
+		view3d_stereo3d_setup(scene, v3d, ar, rect);
+	}
+	else {
+		view3d_main_region_setup_view(scene, v3d, ar, viewmat, winmat, rect);
+	}
 }
 
 /**
@@ -3683,7 +3661,7 @@ static bool view3d_main_region_draw_engine(const bContext *C, Scene *scene,
 	}
 
 	/* setup view matrices */
-	view3d_main_region_setup_view(scene, v3d, ar, NULL, NULL);
+	view3d_main_region_setup_view(scene, v3d, ar, NULL, NULL, NULL);
 
 	/* background draw */
 	ED_region_pixelspace(ar);
@@ -3750,26 +3728,37 @@ static void view3d_main_region_draw_engine_info(View3D *v3d, RegionView3D *rv3d,
 	ED_region_info_draw(ar, rv3d->render_engine->text, fill_color, true);
 }
 
-static bool view3d_stereo3d_active(const bContext *C, Scene *scene, View3D *v3d, RegionView3D *rv3d)
+static bool view3d_stereo3d_active(wmWindow *win, Scene *scene, View3D *v3d, RegionView3D *rv3d)
 {
-	wmWindow *win = CTX_wm_window(C);
-
-	if ((scene->r.scemode & R_MULTIVIEW) == 0)
+	if ((scene->r.scemode & R_MULTIVIEW) == 0) {
 		return false;
-
-	if (WM_stereo3d_enabled(win, true) == false)
-		return false;
-
-	if ((v3d->camera == NULL) || (v3d->camera->type != OB_CAMERA) || rv3d->persp != RV3D_CAMOB)
-		return false;
-
-	if (scene->r.views_format & SCE_VIEWS_FORMAT_MULTIVIEW) {
-		if (v3d->stereo3d_camera == STEREO_MONO_ID)
-			return false;
-
-		return BKE_scene_multiview_is_stereo3d(&scene->r);
 	}
 
+	if ((v3d->camera == NULL) || (v3d->camera->type != OB_CAMERA) || rv3d->persp != RV3D_CAMOB) {
+		return false;
+	}
+
+	switch (v3d->stereo3d_camera) {
+		case STEREO_MONO_ID:
+			return false;
+			break;
+		case STEREO_3D_ID:
+			/* win will be NULL when calling this from the selection or draw loop. */
+			if ((win == NULL) || (WM_stereo3d_enabled(win, true) == false)) {
+				return false;
+			}
+			if (((scene->r.views_format & SCE_VIEWS_FORMAT_MULTIVIEW) != 0) &&
+			    !BKE_scene_multiview_is_stereo3d(&scene->r))
+			{
+				return false;
+			}
+			break;
+		/* We always need the stereo calculation for left and right cameras. */
+		case STEREO_LEFT_ID:
+		case STEREO_RIGHT_ID:
+		default:
+			break;
+	}
 	return true;
 }
 
@@ -3781,7 +3770,7 @@ static bool view3d_stereo3d_active(const bContext *C, Scene *scene, View3D *v3d,
  * we do a small hack to replace it temporarily so we don't need to change the
  * view3d)main_region_setup_view() code to account for that.
  */
-static void view3d_stereo3d_setup(Scene *scene, View3D *v3d, ARegion *ar)
+static void view3d_stereo3d_setup(Scene *scene, View3D *v3d, ARegion *ar, const rcti *rect)
 {
 	bool is_left;
 	const char *names[2] = {STEREO_LEFT_NAME, STEREO_RIGHT_NAME};
@@ -3807,7 +3796,7 @@ static void view3d_stereo3d_setup(Scene *scene, View3D *v3d, ARegion *ar)
 		data->shiftx = BKE_camera_multiview_shift_x(&scene->r, v3d->camera, viewname);
 
 		BKE_camera_multiview_view_matrix(&scene->r, v3d->camera, is_left, viewmat);
-		view3d_main_region_setup_view(scene, v3d, ar, viewmat, NULL);
+		view3d_main_region_setup_view(scene, v3d, ar, viewmat, NULL, rect);
 
 		data->shiftx = shiftx;
 		BLI_unlock_thread(LOCK_VIEW3D);
@@ -3821,7 +3810,7 @@ static void view3d_stereo3d_setup(Scene *scene, View3D *v3d, ARegion *ar)
 		v3d->camera = camera;
 
 		BKE_camera_multiview_view_matrix(&scene->r, camera, false, viewmat);
-		view3d_main_region_setup_view(scene, v3d, ar, viewmat, NULL);
+		view3d_main_region_setup_view(scene, v3d, ar, viewmat, NULL, rect);
 
 		v3d->camera = view_ob;
 		BLI_unlock_thread(LOCK_VIEW3D);
@@ -3837,14 +3826,14 @@ static void view3d_stereo3d_setup_offscreen(Scene *scene, View3D *v3d, ARegion *
 		const bool is_left = STREQ(viewname, STEREO_LEFT_NAME);
 
 		BKE_camera_multiview_view_matrix(&scene->r, v3d->camera, is_left, viewmat);
-		view3d_main_region_setup_view(scene, v3d, ar, viewmat, winmat);
+		view3d_main_region_setup_view(scene, v3d, ar, viewmat, winmat, NULL);
 	}
 	else { /* SCE_VIEWS_FORMAT_MULTIVIEW */
 		float viewmat[4][4];
 		Object *camera = BKE_camera_multiview_render(scene, v3d->camera, viewname);
 
 		BKE_camera_multiview_view_matrix(&scene->r, camera, false, viewmat);
-		view3d_main_region_setup_view(scene, v3d, ar, viewmat, winmat);
+		view3d_main_region_setup_view(scene, v3d, ar, viewmat, winmat, NULL);
 	}
 }
 
@@ -3882,11 +3871,8 @@ static void view3d_main_region_draw_objects(const bContext *C, Scene *scene, Vie
 		GPU_default_lights();
 	}
 
-	/* setup the view matrix */
-	if (view3d_stereo3d_active(C, scene, v3d, rv3d))
-		view3d_stereo3d_setup(scene, v3d, ar);
-	else
-		view3d_main_region_setup_view(scene, v3d, ar, NULL, NULL);
+	/* Setup the view matrix. */
+	ED_view3d_draw_setup_view(CTX_wm_window(C), scene, ar, v3d, NULL, NULL, NULL);
 
 	rv3d->rflag &= ~RV3D_IS_GAME_ENGINE;
 #ifdef WITH_GAMEENGINE
@@ -3947,10 +3933,11 @@ static void view3d_main_region_draw_objects(const bContext *C, Scene *scene, Vie
 		BDR_drawSketch(C);
 	}
 
+#ifdef WITH_INPUT_NDOF
 	if ((U.ndof_flag & NDOF_SHOW_GUIDE) && ((rv3d->viewlock & RV3D_LOCKED) == 0) && (rv3d->persp != RV3D_CAMOB))
 		/* TODO: draw something else (but not this) during fly mode */
 		draw_rotation_guide(rv3d);
-
+#endif
 }
 
 static bool is_cursor_visible(Scene *scene)
@@ -3998,6 +3985,7 @@ static void view3d_main_region_draw_info(const bContext *C, Scene *scene,
 		drawviewborder(scene, ar, v3d);
 	}
 	else if (v3d->flag2 & V3D_RENDER_BORDER) {
+		glLineWidth(1.0f);
 		setlinestyle(3);
 		cpack(0x4040FF);
 
@@ -4091,6 +4079,10 @@ void view3d_main_region_draw(const bContext *C, ARegion *ar)
 	view3d_main_region_draw_info(C, scene, ar, v3d, grid_unit, render_border);
 
 	v3d->flag |= V3D_INVALID_BACKBUF;
+
+	BLI_assert(BLI_listbase_is_empty(&v3d->afterdraw_transp));
+	BLI_assert(BLI_listbase_is_empty(&v3d->afterdraw_xray));
+	BLI_assert(BLI_listbase_is_empty(&v3d->afterdraw_xraytransp));
 }
 
 #ifdef DEBUG_DRAW

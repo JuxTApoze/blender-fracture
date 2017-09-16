@@ -108,8 +108,11 @@ if builder.find('cmake') != -1:
                 platform += 'i386'
             elif builder.endswith('ppc_10_6_cmake'):
                 platform += 'ppc'
+        if builder.endswith('vc2015'):
+            platform += "-vc14"
         builderified_name = 'blender-{}-{}-{}'.format(blender_full_version, git_hash, platform)
-        if branch != '':
+        # NOTE: Blender 2.8 is already respected by blender_full_version.
+        if branch != '' and branch != 'blender2.8':
             builderified_name = branch + "-" + builderified_name
 
         os.rename(result_file, "{}.zip".format(builderified_name))
@@ -130,7 +133,7 @@ if builder.find('cmake') != -1:
         blenderplayer = os.path.join(install_dir, 'blenderplayer')
 
         buildinfo_h = os.path.join(build_dir, "source", "creator", "buildinfo.h")
-        blender_h = os.path.join(blender_dir, "source", "blender", "blenkernel", "BKE_blender.h")
+        blender_h = os.path.join(blender_dir, "source", "blender", "blenkernel", "BKE_blender_version.h")
 
         # Get version information
         blender_version = int(parse_header_file(blender_h, 'BLENDER_VERSION'))
@@ -142,7 +145,7 @@ if builder.find('cmake') != -1:
             chroot_name = 'buildbot_squeeze_x86_64'
             bits = 64
             blender_arch = 'x86_64'
-        elif builder.endswith('i386_cmake'):
+        elif builder.endswith('i686_cmake'):
             chroot_name = 'buildbot_squeeze_i686'
             bits = 32
             blender_arch = 'i686'
@@ -175,7 +178,8 @@ if builder.find('cmake') != -1:
                                                       blender_hash,
                                                       blender_glibc,
                                                       blender_arch)
-        if branch != '':
+        # NOTE: Blender 2.8 is already respected by blender_full_version.
+        if branch != '' and branch != 'blender2.8':
             package_name = branch + "-" + package_name
 
         upload_filename = package_name + ".tar.bz2"

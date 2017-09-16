@@ -167,6 +167,8 @@ unsigned int    BLI_ghashutil_inthash_p_murmur(const void *ptr);
 unsigned int    BLI_ghashutil_inthash_p_simple(const void *ptr);
 bool            BLI_ghashutil_intcmp(const void *a, const void *b);
 
+size_t          BLI_ghashutil_combine_hash(size_t hash_a, size_t hash_b);
+
 
 unsigned int    BLI_ghashutil_uinthash_v4(const unsigned int key[4]);
 #define         BLI_ghashutil_inthash_v4(key) ( \
@@ -244,6 +246,7 @@ void   BLI_gset_flag_clear(GSet *gs, unsigned int flag);
 void   BLI_gset_free(GSet *gs, GSetKeyFreeFP keyfreefp);
 void   BLI_gset_insert(GSet *gh, void *key);
 bool   BLI_gset_add(GSet *gs, void *key);
+bool   BLI_gset_ensure_p_ex(GSet *gs, const void *key, void ***r_key);
 bool   BLI_gset_reinsert(GSet *gh, void *key, GSetKeyFreeFP keyfreefp);
 bool   BLI_gset_haskey(GSet *gs, const void *key) ATTR_WARN_UNUSED_RESULT;
 bool   BLI_gset_pop(GSet *gs, GSetIterState *state, void **r_key) ATTR_WARN_UNUSED_RESULT ATTR_NONNULL();
@@ -293,6 +296,25 @@ double BLI_ghash_calc_quality(GHash *gh);
 double BLI_gset_calc_quality(GSet *gs);
 #endif  /* GHASH_INTERNAL_API */
 
+#define GHASH_FOREACH_BEGIN(type, var, what) \
+	do { \
+		GHashIterator gh_iter##var; \
+		GHASH_ITER(gh_iter##var, what) { \
+			type var = (type)(BLI_ghashIterator_getValue(&gh_iter##var)); \
+
+#define GHASH_FOREACH_END() \
+		} \
+	} while(0)
+
+#define GSET_FOREACH_BEGIN(type, var, what) \
+	do { \
+		GSetIterator gh_iter##var; \
+		GSET_ITER(gh_iter##var, what) { \
+			type var = (type)(BLI_gsetIterator_getKey(&gh_iter##var));
+
+#define GSET_FOREACH_END() \
+		} \
+	} while(0)
 
 #ifdef __cplusplus
 }

@@ -55,11 +55,8 @@
 
 #include "PIL_time.h"
 
-#include "WM_api.h"
-
 #include "BKE_appdir.h"
 #include "BKE_anim.h"
-#include "BKE_blender.h"
 #include "BKE_cloth.h"
 #include "BKE_dynamicpaint.h"
 #include "BKE_global.h"
@@ -391,9 +388,9 @@ static void ptcache_particle_interpolate(int index, void *psys_v, void **data, f
 		}
 	}
 
-	/* determine rotation from velocity */
+	/* default to no rotation */
 	if (data[BPHYS_DATA_LOCATION] && !data[BPHYS_DATA_ROTATION]) {
-		vec_to_quat(keys[2].rot, keys[2].vel, OB_NEGX, OB_POSZ);
+		unit_qt(keys[2].rot);
 	}
 
 	if (cfra > pa->time)
@@ -1142,13 +1139,13 @@ static int ptcache_smoke_openvdb_read(struct OpenVDBReader *reader, void *smoke_
 
 		OpenVDB_import_grid_fl(reader, "density", &dens, sds->res_wt);
 
-		if (fluid_fields & SM_ACTIVE_FIRE) {
+		if (cache_fields & SM_ACTIVE_FIRE) {
 			OpenVDB_import_grid_fl(reader, "flame", &flame, sds->res_wt);
 			OpenVDB_import_grid_fl(reader, "fuel", &fuel, sds->res_wt);
 			OpenVDB_import_grid_fl(reader, "react", &react, sds->res_wt);
 		}
 
-		if (fluid_fields & SM_ACTIVE_COLORS) {
+		if (cache_fields & SM_ACTIVE_COLORS) {
 			OpenVDB_import_grid_vec(reader, "color", &r, &g, &b, sds->res_wt);
 		}
 
@@ -1280,6 +1277,21 @@ static int ptcache_dynamicpaint_read(PTCacheFile *pf, void *dp_v)
 	return 1;
 }
 
+static MeshIsland *find_meshisland(FractureModifierData *fmd, int id)
+{
+	MeshIsland *mi = (MeshIsland*)fmd->meshIslands.first;
+	while (mi)
+	{
+		if (mi->id == id)
+		{
+			return mi;
+		}
+		mi = mi->next;
+	}
+
+	return NULL;
+}
+
 /* Rigid Body functions */
 static int  ptcache_rigidbody_write(int index, void *rb_v, void **data, int cfra)
 {
@@ -1308,9 +1320,9 @@ static int  ptcache_rigidbody_write(int index, void *rb_v, void **data, int cfra
 	ob = rbw->objects[rbw->cache_offset_map[index]];
 	fmd = (FractureModifierData*)modifiers_findByType(ob, eModifierType_Fracture);
 
-	if (rbo && rbo->type == RBO_TYPE_ACTIVE && rbo->physics_object)
+	if (rbo && rbo->physics_object)
 	{
-		if (!fmd || fmd->fracture_mode != MOD_FRACTURE_DYNAMIC)
+		if ((!fmd || fmd->fracture_mode != MOD_FRACTURE_DYNAMIC) && rbo->type == RBO_TYPE_ACTIVE)
 		{
 
 #ifdef WITH_BULLET
@@ -1322,7 +1334,8 @@ static int  ptcache_rigidbody_write(int index, void *rb_v, void **data, int cfra
 		}
 		else if (fmd && fmd->fracture_mode == MOD_FRACTURE_DYNAMIC)
 		{
-			MeshIsland *mi = BLI_findlink(&fmd->meshIslands, rbo->meshisland_index);
+			//MeshIsland *mi = BLI_findlink(&fmd->meshIslands, rbo->meshisland_index);
+			MeshIsland *mi = find_meshisland(fmd, rbo->meshisland_index);
 			int frame = (int)floor(cfra);
 
 //			if (!mi)
@@ -1340,6 +1353,13 @@ static int  ptcache_rigidbody_write(int index, void *rb_v, void **data, int cfra
 			//printf("Writing frame %d %d %d %d\n", (int)cfra, mi->start_frame, frame, fmd->last_frame);
 //			if (frame < 0) // GAAAAH!
 //				frame = 0;
+
+			//grow array if necessary...
+			if (frame >= mi->frame_count) {
+				mi->frame_count = frame+1;
+				mi->locs = MEM_reallocN(mi->locs, sizeof(float) * 3 * mi->frame_count);
+				mi->rots = MEM_reallocN(mi->rots, sizeof(float) * 4 * mi->frame_count);
+			}
 
 			mi->locs[3*frame] = rbo->pos[0];
 			mi->locs[3*frame+1] = rbo->pos[1];
@@ -1376,7 +1396,7 @@ static void ptcache_rigidbody_read(int index, void *rb_v, void **data, float cfr
 
 	ob = rbw->objects[rbw->cache_offset_map[index]];
 	fmd = (FractureModifierData*)modifiers_findByType(ob, eModifierType_Fracture);
-	if (!fmd || fmd->fracture_mode != MOD_FRACTURE_DYNAMIC)
+	if (!fmd || (fmd && fmd->fracture_mode != MOD_FRACTURE_DYNAMIC))
 	{
 		if (rbo && rbo->type == RBO_TYPE_ACTIVE) {
 			if (old_data) {
@@ -1391,7 +1411,7 @@ static void ptcache_rigidbody_read(int index, void *rb_v, void **data, float cfr
 	}
 	else if (fmd && fmd->fracture_mode == MOD_FRACTURE_DYNAMIC)
 	{
-		if (rbo && rbo->type == RBO_TYPE_ACTIVE)
+		if (rbo /*&& rbo->type == RBO_TYPE_ACTIVE*/)
 		{
 			//damn, slow listbase based lookup
 			//TODO, need to speed this up.... array, hash ?
@@ -1400,7 +1420,7 @@ static void ptcache_rigidbody_read(int index, void *rb_v, void **data, float cfr
 			MeshIsland *mi = NULL;
 			int frame = (int)floor(cfra);
 
-			mi = BLI_findlink(&fmd->meshIslands, rbo->meshisland_index);
+			mi = find_meshisland(fmd, rbo->meshisland_index);
 
 //			if (!mi)
 //				return;
@@ -1442,7 +1462,7 @@ static void ptcache_rigidbody_interpolate(int index, void *rb_v, void **data, fl
 	ob = rbw->objects[rbw->cache_offset_map[index]];
 	fmd = (FractureModifierData*)modifiers_findByType(ob, eModifierType_Fracture);
 
-	if (rbo->type == RBO_TYPE_ACTIVE) {
+	if (rbo->type == RBO_TYPE_ACTIVE || (fmd && fmd->fracture_mode == MOD_FRACTURE_DYNAMIC)) {
 
 		copy_v3_v3(keys[1].co, rbo->pos);
 		copy_qt_qt(keys[1].rot, rbo->orn);
@@ -1461,7 +1481,8 @@ static void ptcache_rigidbody_interpolate(int index, void *rb_v, void **data, fl
 		{
 			float loc[3], rot[4];
 
-			MeshIsland *mi = BLI_findlink(&fmd->meshIslands, rbo->meshisland_index);
+			MeshIsland *mi = find_meshisland(fmd, rbo->meshisland_index);
+
 			int frame = (int)floor(cfra);
 			frame = frame - mi->start_frame;
 
@@ -2625,7 +2646,7 @@ static int ptcache_read_openvdb_stream(PTCacheID *pid, int cfra)
 #ifdef WITH_OPENVDB
 	char filename[FILE_MAX * 2];
 
-	 /* save blend file before using disk pointcache */
+	/* save blend file before using disk pointcache */
 	if (!G.relbase_valid && (pid->cache->flag & PTCACHE_EXTERNAL) == 0)
 		return 0;
 
@@ -2758,7 +2779,7 @@ static int ptcache_interpolate(PTCacheID *pid, float cfra, int cfra1, int cfra2)
 }
 /* reads cache from disk or memory */
 /* possible to get old or interpolated result */
-int BKE_ptcache_read(PTCacheID *pid, float cfra)
+int BKE_ptcache_read(PTCacheID *pid, float cfra, bool no_extrapolate_old)
 {
 	int cfrai = (int)floor(cfra), cfra1=0, cfra2=0;
 	int ret = 0;
@@ -2784,10 +2805,17 @@ int BKE_ptcache_read(PTCacheID *pid, float cfra)
 		return 0;
 
 	/* don't read old cache if already simulated past cached frame */
-	if (cfra1 == 0 && cfra2 && cfra2 <= pid->cache->simframe)
-		return 0;
-	if (cfra1 && cfra1 == cfra2)
-		return 0;
+	if (no_extrapolate_old) {
+		if (cfra1 == 0 && cfra2 && cfra2 <= pid->cache->simframe)
+			return 0;
+		if (cfra1 && cfra1 == cfra2)
+			return 0;
+	}
+	else {
+		/* avoid calling interpolate between the same frame values */
+		if (cfra1 && cfra1 == cfra2)
+			cfra1 = 0;
+	}
 
 	if (cfra1) {
 		if (pid->file_type == PTCACHE_FILE_OPENVDB && pid->read_openvdb_stream) {
@@ -3753,9 +3781,13 @@ void BKE_ptcache_bake(PTCacheBaker *baker)
 						psys_get_pointcache_start_end(scene, pid->calldata, &cache->startframe, &cache->endframe);
 					}
 
-					if ((cache->flag & PTCACHE_REDO_NEEDED || (cache->flag & PTCACHE_SIMULATION_VALID)==0) &&
-					    (render || bake))
-					{
+					// XXX workaround for regression inroduced in ee3fadd, needs looking into
+					if (pid->type == PTCACHE_TYPE_RIGIDBODY) {
+						if ((cache->flag & PTCACHE_REDO_NEEDED || (cache->flag & PTCACHE_SIMULATION_VALID)==0) && (render || bake)) {
+							BKE_ptcache_id_clear(pid, PTCACHE_CLEAR_ALL, 0);
+						}
+					}
+					else if (((cache->flag & PTCACHE_BAKED) == 0) && (render || bake)) {
 						BKE_ptcache_id_clear(pid, PTCACHE_CLEAR_ALL, 0);
 					}
 

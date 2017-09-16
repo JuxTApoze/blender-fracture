@@ -37,19 +37,19 @@ if not project_info.init(sys.argv[-1]):
     sys.exit(1)
 
 from project_info import (
-        SIMPLE_PROJECTFILE,
-        SOURCE_DIR,
-        CMAKE_DIR,
-        PROJECT_DIR,
-        source_list,
-        is_project_file,
-        is_c_header,
-        # is_py,
-        cmake_advanced_info,
-        cmake_compiler_defines,
-        cmake_cache_var,
-        project_name_get,
-        )
+    SIMPLE_PROJECTFILE,
+    SOURCE_DIR,
+    CMAKE_DIR,
+    PROJECT_DIR,
+    source_list,
+    is_project_file,
+    is_c_header,
+    # is_py,
+    cmake_advanced_info,
+    cmake_compiler_defines,
+    cmake_cache_var,
+    project_name_get,
+)
 
 
 import os
@@ -84,7 +84,7 @@ def create_nb_project_main():
         make_exe = cmake_cache_var("CMAKE_MAKE_PROGRAM")
         make_exe_basename = os.path.basename(make_exe)
 
-        # --------------- NB spesific
+        # --------------- NB specific
         defines = [("%s=%s" % cdef) if cdef[1] else cdef[0] for cdef in defines]
         defines += [cdef.replace("#define", "").strip() for cdef in cmake_compiler_defines()]
 

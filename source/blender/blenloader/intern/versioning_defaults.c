@@ -58,6 +58,9 @@ void BLO_update_defaults_userpref_blend(void)
 	U.uiflag |= USER_QUIT_PROMPT;
 	U.uiflag |= USER_CONTINUOUS_MOUSE;
 
+	/* See T45301 */
+	U.uiflag |= USER_LOCK_CURSOR_ADJUST;
+
 	U.versions = 1;
 	U.savetime = 2;
 
@@ -68,6 +71,18 @@ void BLO_update_defaults_userpref_blend(void)
 	 * but take care since some hardware has driver bugs here (T46962).
 	 * Further hardware workarounds should be made in gpu_extensions.c */
 	U.glalphaclip = (1.0f / 255);
+
+	/* default so DPI is detected automatically */
+	U.dpi = 0;
+	U.ui_scale = 1.0f;
+
+#ifdef WITH_PYTHON_SECURITY
+	/* use alternative setting for security nuts
+	 * otherwise we'd need to patch the binary blob - startup.blend.c */
+	U.flag |= USER_SCRIPT_AUTOEXEC_DISABLE;
+#else
+	U.flag &= ~USER_SCRIPT_AUTOEXEC_DISABLE;
+#endif
 }
 
 /**
@@ -75,17 +90,11 @@ void BLO_update_defaults_userpref_blend(void)
  * This function can be emptied each time the startup.blend is updated. */
 void BLO_update_defaults_startup_blend(Main *bmain)
 {
-	Scene *scene;
-	SceneRenderLayer *srl;
-	FreestyleLineStyle *linestyle;
-	Mesh *me;
-	Material *mat;
-
-	for (scene = bmain->scene.first; scene; scene = scene->id.next) {
+	for (Scene *scene = bmain->scene.first; scene; scene = scene->id.next) {
 		scene->r.im_format.planes = R_IMF_PLANES_RGBA;
 		scene->r.im_format.compress = 15;
 
-		for (srl = scene->r.layers.first; srl; srl = srl->next) {
+		for (SceneRenderLayer *srl = scene->r.layers.first; srl; srl = srl->next) {
 			srl->freestyleConfig.sphere_radius = 0.1f;
 			srl->pass_alpha_threshold = 0.5f;
 		}
@@ -114,6 +123,11 @@ void BLO_update_defaults_startup_blend(Main *bmain)
 				brush->strength = 0.5f;
 				brush->flag = GP_EDITBRUSH_FLAG_USE_FALLOFF;
 				
+				brush = &gset->brush[GP_EDITBRUSH_TYPE_STRENGTH];
+				brush->size = 25;
+				brush->strength = 0.5f;
+				brush->flag = GP_EDITBRUSH_FLAG_USE_FALLOFF;
+
 				brush = &gset->brush[GP_EDITBRUSH_TYPE_GRAB];
 				brush->size = 50;
 				brush->strength = 0.3f;
@@ -148,6 +162,7 @@ void BLO_update_defaults_startup_blend(Main *bmain)
 			ParticleEditSettings *pset = &ts->particle;
 			for (int a = 0; a < PE_TOT_BRUSH; a++) {
 				pset->brush[a].strength = 0.5f;
+				pset->brush[a].count = 10;
 			}
 			pset->brush[PE_BRUSH_CUT].strength = 1.0f;
 		}
@@ -158,7 +173,7 @@ void BLO_update_defaults_startup_blend(Main *bmain)
 		scene->r.ffcodecdata.audio_mixrate = 48000;
 	}
 
-	for (linestyle = bmain->linestyle.first; linestyle; linestyle = linestyle->id.next) {
+	for (FreestyleLineStyle *linestyle = bmain->linestyle.first; linestyle; linestyle = linestyle->id.next) {
 		linestyle->flag = LS_SAME_OBJECT | LS_NO_SORTING | LS_TEXTURE;
 		linestyle->sort_key = LS_SORT_KEY_DISTANCE_FROM_CAMERA;
 		linestyle->integration_type = LS_INTEGRATION_MEAN;
@@ -166,44 +181,49 @@ void BLO_update_defaults_startup_blend(Main *bmain)
 		linestyle->chain_count = 10;
 	}
 
-	{
-		bScreen *screen;
+	for (bScreen *screen = bmain->screen.first; screen; screen = screen->id.next) {
+		ScrArea *area;
+		for (area = screen->areabase.first; area; area = area->next) {
+			SpaceLink *space_link;
+			ARegion *ar;
 
-		for (screen = bmain->screen.first; screen; screen = screen->id.next) {
-			ScrArea *area;
-			for (area = screen->areabase.first; area; area = area->next) {
-				SpaceLink *space_link;
-				ARegion *ar;
-
-				for (space_link = area->spacedata.first; space_link; space_link = space_link->next) {
-					if (space_link->spacetype == SPACE_CLIP) {
-						SpaceClip *space_clip = (SpaceClip *) space_link;
-						space_clip->flag &= ~SC_MANUAL_CALIBRATION;
-					}
+			for (space_link = area->spacedata.first; space_link; space_link = space_link->next) {
+				if (space_link->spacetype == SPACE_CLIP) {
+					SpaceClip *space_clip = (SpaceClip *) space_link;
+					space_clip->flag &= ~SC_MANUAL_CALIBRATION;
 				}
+			}
 
-				for (ar = area->regionbase.first; ar; ar = ar->next) {
-					/* Remove all stored panels, we want to use defaults (order, open/closed) as defined by UI code here! */
-					BLI_freelistN(&ar->panels);
+			for (ar = area->regionbase.first; ar; ar = ar->next) {
+				/* Remove all stored panels, we want to use defaults (order, open/closed) as defined by UI code here! */
+				BLI_freelistN(&ar->panels);
 
-					/* some toolbars have been saved as initialized,
-					 * we don't want them to have odd zoom-level or scrolling set, see: T47047 */
-					if (ELEM(ar->regiontype, RGN_TYPE_UI, RGN_TYPE_TOOLS, RGN_TYPE_TOOL_PROPS)) {
-						ar->v2d.flag &= ~V2D_IS_INITIALISED;
-					}
+				/* some toolbars have been saved as initialized,
+				 * we don't want them to have odd zoom-level or scrolling set, see: T47047 */
+				if (ELEM(ar->regiontype, RGN_TYPE_UI, RGN_TYPE_TOOLS, RGN_TYPE_TOOL_PROPS)) {
+					ar->v2d.flag &= ~V2D_IS_INITIALISED;
 				}
 			}
 		}
 	}
 
-	for (me = bmain->mesh.first; me; me = me->id.next) {
+	for (Mesh *me = bmain->mesh.first; me; me = me->id.next) {
 		me->smoothresh = DEG2RADF(180.0f);
 		me->flag &= ~ME_TWOSIDED;
 	}
 
-	for (mat = bmain->mat.first; mat; mat = mat->id.next) {
+	for (Material *mat = bmain->mat.first; mat; mat = mat->id.next) {
 		mat->line_col[0] = mat->line_col[1] = mat->line_col[2] = 0.0f;
 		mat->line_col[3] = 1.0f;
+	}
+
+	{
+		Object *ob;
+
+		ob = (Object *)BKE_libblock_find_name_ex(bmain, ID_OB, "Camera");
+		if (ob) {
+			ob->rot[1] = 0.0f;
+		}
 	}
 
 	{
@@ -225,13 +245,13 @@ void BLO_update_defaults_startup_blend(Main *bmain)
 		/* remove polish brush (flatten/contrast does the same) */
 		br = (Brush *)BKE_libblock_find_name_ex(bmain, ID_BR, "Polish");
 		if (br) {
-			BKE_libblock_free(bmain, br);
+			BKE_libblock_delete(bmain, br);
 		}
 
 		/* remove brush brush (huh?) from some modes (draw brushes do the same) */
 		br = (Brush *)BKE_libblock_find_name_ex(bmain, ID_BR, "Brush");
 		if (br) {
-			BKE_libblock_free(bmain, br);
+			BKE_libblock_delete(bmain, br);
 		}
 
 		/* remove draw brush from texpaint (draw brushes do the same) */
@@ -250,6 +270,17 @@ void BLO_update_defaults_startup_blend(Main *bmain)
 		br = (Brush *)BKE_libblock_find_name_ex(bmain, ID_BR, "Grab");
 		if (br) {
 			br->flag |= BRUSH_ORIGINAL_NORMAL;
+		}
+
+		/* increase strength, better for smoothing method */
+		br = (Brush *)BKE_libblock_find_name_ex(bmain, ID_BR, "Blur");
+		if (br) {
+			br->alpha = 1.0f;
+		}
+
+		br = (Brush *)BKE_libblock_find_name_ex(bmain, ID_BR, "Flatten/Contrast");
+		if (br) {
+			br->flag |= BRUSH_ACCUMULATE;
 		}
 	}
 }

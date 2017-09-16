@@ -54,6 +54,7 @@
 #include "BKE_editmesh.h"
 #include "BKE_object.h"
 #include "BKE_particle.h"
+#include "BKE_pointcache.h"
 #include "BKE_scene.h"
 #include "BKE_material.h"
 #include "BKE_image.h"
@@ -144,18 +145,6 @@ void BKE_object_eval_done(EvaluationContext *UNUSED(eval_ctx), Object *ob)
 	else ob->transflag &= ~OB_NEG_SCALE;
 }
 
-void BKE_object_eval_modifier(struct EvaluationContext *eval_ctx,
-                              struct Scene *scene,
-                              struct Object *ob,
-                              struct ModifierData *md)
-{
-	DEBUG_PRINT("%s on %s\n", __func__, ob->id.name);
-	(void) eval_ctx;  /* Ignored. */
-	(void) scene;  /* Ignored. */
-	(void) ob;  /* Ignored. */
-	(void) md;  /* Ignored. */
-}
-
 void BKE_object_handle_data_update(EvaluationContext *eval_ctx,
                                    Scene *scene,
                                    Object *ob)
@@ -203,7 +192,7 @@ void BKE_object_handle_data_update(EvaluationContext *eval_ctx,
 			break;
 		}
 		case OB_ARMATURE:
-			if (ob->id.lib && ob->proxy_from) {
+			if (ID_IS_LINKED_DATABLOCK(ob) && ob->proxy_from) {
 				if (BKE_pose_copy_result(ob->pose, ob->proxy_from->pose) == false) {
 					printf("Proxy copy error, lib Object: %s proxy Object: %s\n",
 					       ob->id.name + 2, ob->proxy_from->id.name + 2);
@@ -269,7 +258,7 @@ void BKE_object_handle_data_update(EvaluationContext *eval_ctx,
 				psys_changed_type(ob, psys);
 			}
 
-			if (psys_check_enabled(ob, psys)) {
+			if (psys_check_enabled(ob, psys, eval_ctx->mode == DAG_EVAL_RENDER)) {
 				/* check use of dupli objects here */
 				if (psys->part && (psys->part->draw_as == PART_DRAW_REND || eval_ctx->mode == DAG_EVAL_RENDER) &&
 				    ((psys->part->ren_as == PART_DRAW_OB && psys->part->dup_ob) ||
@@ -278,7 +267,7 @@ void BKE_object_handle_data_update(EvaluationContext *eval_ctx,
 					ob->transflag |= OB_DUPLIPARTS;
 				}
 
-				particle_system_update(scene, ob, psys);
+				particle_system_update(scene, ob, psys, (eval_ctx->mode == DAG_EVAL_RENDER));
 				psys = psys->next;
 			}
 			else if (psys->flag & PSYS_DELETE) {
@@ -315,7 +304,7 @@ void BKE_object_eval_uber_transform(EvaluationContext *UNUSED(eval_ctx),
 	// XXX: it's almost redundant now...
 
 	/* Handle proxy copy for target, */
-	if (ob->id.lib && ob->proxy_from) {
+	if (ID_IS_LINKED_DATABLOCK(ob) && ob->proxy_from) {
 		if (ob->proxy_from->proxy_group) {
 			/* Transform proxy into group space. */
 			Object *obg = ob->proxy_from->proxy_group;
@@ -346,4 +335,10 @@ void BKE_object_eval_uber_data(EvaluationContext *eval_ctx,
 	BKE_object_handle_data_update(eval_ctx, scene, ob);
 
 	ob->recalc &= ~(OB_RECALC_DATA | OB_RECALC_TIME);
+}
+
+void BKE_object_eval_cloth(EvaluationContext *UNUSED(eval_ctx), Scene *scene, Object *object)
+{
+	DEBUG_PRINT("%s on %s\n", __func__, object->id.name);
+	BKE_ptcache_object_reset(scene, object, PTCACHE_RESET_DEPSGRAPH);
 }

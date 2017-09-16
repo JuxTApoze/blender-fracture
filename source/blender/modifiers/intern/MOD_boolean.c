@@ -33,7 +33,7 @@
  */
 
 // #ifdef DEBUG_TIME
-// #define USE_BMESH
+#define USE_BMESH
 #ifdef WITH_MOD_BOOLEAN
 #  define USE_CARVE WITH_MOD_BOOLEAN
 #endif
@@ -71,6 +71,14 @@
 #include "PIL_time_utildefines.h"
 #endif
 
+static void initData(ModifierData *md)
+{
+	BooleanModifierData *bmd = (BooleanModifierData *)md;
+
+	bmd->solver = eBooleanModifierSolver_BMesh;
+	bmd->double_threshold = 1e-6f;
+}
+
 static void copyData(ModifierData *md, ModifierData *target)
 {
 #if 0
@@ -93,7 +101,7 @@ static void foreachObjectLink(
 {
 	BooleanModifierData *bmd = (BooleanModifierData *) md;
 
-	walk(userData, ob, &bmd->object, IDWALK_NOP);
+	walk(userData, ob, &bmd->object, IDWALK_CB_NOP);
 }
 
 static void updateDepgraph(ModifierData *md, DagForest *forest,
@@ -183,17 +191,6 @@ static DerivedMesh *get_quick_derivedMesh(
 
 #ifdef USE_BMESH
 
-/* has no meaning for faces, do this so we can tell which face is which */
-#define BM_FACE_TAG BM_ELEM_DRAW
-
-/**
- * Compare selected/unselected.
- */
-static int bm_face_isect_pair(BMFace *f, void *UNUSED(user_data))
-{
-	return BM_elem_flag_test(f, BM_FACE_TAG) ? 1 : 0;
-}
-
 static DerivedMesh *applyModifier_bmesh(
         ModifierData *md, Object *ob,
         DerivedMesh *dm,
@@ -216,111 +213,7 @@ static DerivedMesh *applyModifier_bmesh(
 		result = get_quick_derivedMesh(ob, dm, bmd->object, dm_other, bmd->operation);
 
 		if (result == NULL) {
-			BMesh *bm;
-			const BMAllocTemplate allocsize = BMALLOC_TEMPLATE_FROM_DM(dm, dm_other);
-
-#ifdef DEBUG_TIME
-			TIMEIT_START(boolean_bmesh);
-#endif
-			bm = BM_mesh_create(&allocsize);
-
-			DM_to_bmesh_ex(dm_other, bm, true);
-			DM_to_bmesh_ex(dm, bm, true);
-
-			/* main bmesh intersection setup */
-			{
-				/* create tessface & intersect */
-				const int looptris_tot = poly_to_tri_count(bm->totface, bm->totloop);
-				int tottri;
-				BMLoop *(*looptris)[3];
-
-				looptris = MEM_mallocN(sizeof(*looptris) * looptris_tot, __func__);
-
-				BM_mesh_calc_tessellation(bm, looptris, &tottri);
-
-				/* postpone this until after tessellating
-				 * so we can use the original normals before the vertex are moved */
-				{
-					BMIter iter;
-					int i;
-					const int i_verts_end = dm_other->getNumVerts(dm_other);
-					const int i_faces_end = dm_other->getNumPolys(dm_other);
-
-					float imat[4][4];
-					float omat[4][4];
-
-					invert_m4_m4(imat, ob->obmat);
-					mul_m4_m4m4(omat, imat, bmd->object->obmat);
-
-
-					BMVert *eve;
-					i = 0;
-					BM_ITER_MESH (eve, &iter, bm, BM_VERTS_OF_MESH) {
-						mul_m4_v3(omat, eve->co);
-						if (++i == i_verts_end) {
-							break;
-						}
-					}
-
-					/* we need face normals because of 'BM_face_split_edgenet'
-					 * we could calculate on the fly too (before calling split). */
-					{
-						float nmat[4][4];
-						invert_m4_m4(nmat, omat);
-
-						const short ob_src_totcol = bmd->object->totcol;
-						short *material_remap = BLI_array_alloca(material_remap, ob_src_totcol ? ob_src_totcol : 1);
-
-						BKE_material_remap_object_calc(ob, bmd->object, material_remap);
-
-						BMFace *efa;
-						i = 0;
-						BM_ITER_MESH (efa, &iter, bm, BM_FACES_OF_MESH) {
-							mul_transposed_mat3_m4_v3(nmat, efa->no);
-							normalize_v3(efa->no);
-							BM_elem_flag_enable(efa, BM_FACE_TAG);  /* temp tag to test which side split faces are from */
-
-							/* remap material */
-							if (LIKELY(efa->mat_nr < ob_src_totcol)) {
-								efa->mat_nr = material_remap[efa->mat_nr];
-							}
-
-							if (++i == i_faces_end) {
-								break;
-							}
-						}
-					}
-				}
-
-				/* not needed, but normals for 'dm' will be invalid,
-				 * currently this is ok for 'BM_mesh_intersect' */
-				// BM_mesh_normals_update(bm);
-
-				BM_mesh_intersect(
-				        bm,
-				        looptris, tottri,
-				        bm_face_isect_pair, NULL,
-				        false,
-				        (bmd->bm_flag & eBooleanModifierBMeshFlag_BMesh_Separate) != 0,
-				        (bmd->bm_flag & eBooleanModifierBMeshFlag_BMesh_NoDissolve) == 0,
-				        (bmd->bm_flag & eBooleanModifierBMeshFlag_BMesh_NoConnectRegions) == 0,
-				        bmd->operation,
-				        bmd->threshold);
-
-				MEM_freeN(looptris);
-			}
-
-			result = CDDM_from_bmesh(bm, true);
-
-			BM_mesh_free(bm);
-
-			result->dirty |= DM_DIRTY_NORMALS;
-
-#ifdef DEBUG_TIME
-			TIMEIT_END(boolean_bmesh);
-#endif
-
-			return result;
+			result = NewBooleanDerivedMeshBMesh(dm, ob, dm_other, bmd->object, bmd->operation, bmd->double_threshold);
 		}
 
 		/* if new mesh returned, return it; otherwise there was
@@ -409,15 +302,14 @@ static DerivedMesh *applyModifier(
         ModifierApplyFlag flag)
 {
 	BooleanModifierData *bmd = (BooleanModifierData *)md;
-	const int method = (bmd->bm_flag & eBooleanModifierBMeshFlag_Enabled) ? 1 : 0;
 
-	switch (method) {
+	switch (bmd->solver) {
 #ifdef USE_CARVE
-		case 0:
+		case eBooleanModifierSolver_Carve:
 			return applyModifier_carve(md, ob, derivedData, flag);
 #endif
 #ifdef USE_BMESH
-		case 1:
+		case eBooleanModifierSolver_BMesh:
 			return applyModifier_bmesh(md, ob, derivedData, flag);
 #endif
 		default:
@@ -441,7 +333,7 @@ ModifierTypeInfo modifierType_Boolean = {
 	/* deformMatricesEM */  NULL,
 	/* applyModifier */     applyModifier,
 	/* applyModifierEM */   NULL,
-	/* initData */          NULL,
+	/* initData */          initData,
 	/* requiredDataMask */  requiredDataMask,
 	/* freeData */          NULL,
 	/* isDisabled */        isDisabled,

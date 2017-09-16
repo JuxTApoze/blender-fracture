@@ -94,7 +94,7 @@ static void bm_interp_face_store(InterpFace *iface, BMesh *bm, BMFace *f, MemAre
 
 		/* use later for index lookups */
 		BM_elem_index_set(l_iter, i); /* set_dirty */
-	} while (i++, (l_iter = l_iter->next) != l_first);
+	} while ((void)i++, (l_iter = l_iter->next) != l_first);
 	bm->elem_index_dirty |= BM_LOOP;
 }
 static void bm_interp_face_free(InterpFace *iface, BMesh *bm)
@@ -173,7 +173,7 @@ static void bm_loop_customdata_merge(
 	l_b_inner_inset = BM_edge_other_loop(e_b, l_b_inner);
 	BLI_assert(l_a_inner_inset->v == l_b_inner_inset->v);
 
-	/* check if ther is no chance of diversion */
+	/* check if there is no chance of diversion */
 	if (l_a_inner_inset->f == l_b_inner_inset->f) {
 		return;
 	}
@@ -275,7 +275,7 @@ static void bmo_face_inset_individual(
 
 	BMLoop *l_iter, *l_first;
 	BMLoop *l_other;
-	unsigned int i;
+	uint i;
 	float e_length_prev;
 
 	l_first = BM_FACE_FIRST_LOOP(f);
@@ -293,7 +293,7 @@ static void bmo_face_inset_individual(
 
 		/* unrelated to splitting, but calc here */
 		BM_edge_calc_face_tangent(l_iter->e, l_iter, edge_nors[i]);
-	} while (i++, ((l_iter = l_iter->next) != l_first));
+	} while ((void)i++, ((l_iter = l_iter->next) != l_first));
 
 
 	/* build rim faces */
@@ -313,7 +313,7 @@ static void bmo_face_inset_individual(
 		                                      l_iter->next->v,
 		                                      l_iter->v,
 		                                      f, BM_CREATE_NOP);
-		BMO_elem_flag_enable(bm, f_new_outer, ELE_NEW);
+		BMO_face_flag_enable(bm, f_new_outer, ELE_NEW);
 
 		/* copy loop data */
 		l_other = l_iter->radial_next;
@@ -324,7 +324,7 @@ static void bmo_face_inset_individual(
 			BM_elem_attrs_copy(bm, bm, l_iter->next, l_other);
 			BM_elem_attrs_copy(bm, bm, l_iter, l_other->next);
 		}
-	} while (i++, ((l_iter = l_iter->next) != l_first));
+	} while ((void)i++, ((l_iter = l_iter->next) != l_first));
 
 	/* hold interpolation values */
 	if (use_interpolate) {
@@ -376,14 +376,14 @@ static void bmo_face_inset_individual(
 
 
 		copy_v3_v3(coords[i], v_new_co);
-	} while (i++, ((l_iter = l_iter->next) != l_first));
+	} while ((void)i++, ((l_iter = l_iter->next) != l_first));
 
 	/* update the coords */
 	l_iter = l_first;
 	i = 0;
 	do {
 		copy_v3_v3(l_iter->v->co, coords[i]);
-	} while (i++, ((l_iter = l_iter->next) != l_first));
+	} while ((void)i++, ((l_iter = l_iter->next) != l_first));
 
 
 	if (use_interpolate) {
@@ -647,6 +647,10 @@ void bmo_inset_region_exec(BMesh *bm, BMOperator *op)
 	} (void)0
 #define VERT_ORIG_GET(_v)  \
 	(const float *)BLI_ghash_lookup_default(vert_coords, (_v), (_v)->co)
+	/* memory for the coords isn't given back to the arena,
+	 * acceptable in this case since it runs a fixed number of times. */
+#define VERT_ORIG_REMOVE(_v)  \
+	BLI_ghash_remove(vert_coords, (_v), NULL, NULL)
 
 
 	for (i = 0, es = edge_info; i < edge_info_len; i++, es++) {
@@ -659,7 +663,7 @@ void bmo_inset_region_exec(BMesh *bm, BMOperator *op)
 
 		/* run the separate arg */
 		if (!BM_edge_is_boundary(es->e_old)) {
-			bmesh_edge_separate(bm, es->e_old, es->l, false);
+			bmesh_kernel_edge_separate(bm, es->e_old, es->l, false);
 		}
 
 		/* calc edge-split info */
@@ -738,7 +742,7 @@ void bmo_inset_region_exec(BMesh *bm, BMOperator *op)
 				/* disable touching twice, this _will_ happen if the flags not disabled */
 				BM_elem_flag_disable(v, BM_ELEM_TAG);
 
-				bmesh_vert_separate(bm, v, &vout, &r_vout_len, false);
+				bmesh_kernel_vert_separate(bm, v, &vout, &r_vout_len, false);
 				v = NULL; /* don't use again */
 
 				/* in some cases the edge doesn't split off */
@@ -972,7 +976,11 @@ void bmo_inset_region_exec(BMesh *bm, BMOperator *op)
 								v_glue = v_split;
 							}
 							else {
-								BM_vert_splice(bm, v_glue, v_split);
+								if (BM_vert_splice(bm, v_glue, v_split)) {
+									if (use_vert_coords_orig) {
+										VERT_ORIG_REMOVE(v_split);
+									}
+								}
 							}
 						}
 					}
@@ -1037,7 +1045,7 @@ void bmo_inset_region_exec(BMesh *bm, BMOperator *op)
 		/* no need to check doubles, we KNOW there won't be any */
 		/* yes - reverse face is correct in this case */
 		f = BM_face_create_verts(bm, varr, j, es->l->f, BM_CREATE_NOP, true);
-		BMO_elem_flag_enable(bm, f, ELE_NEW);
+		BMO_face_flag_enable(bm, f, ELE_NEW);
 
 		/* copy for loop data, otherwise UV's and vcols are no good.
 		 * tiny speedup here we could be more clever and copy from known adjacent data

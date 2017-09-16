@@ -88,7 +88,7 @@ static void foreachObjectLink(
 {
 	LatticeModifierData *lmd = (LatticeModifierData *) md;
 
-	walk(userData, ob, &lmd->object, IDWALK_NOP);
+	walk(userData, ob, &lmd->object, IDWALK_CB_NOP);
 }
 
 static void updateDepgraph(ModifierData *md, DagForest *forest,
@@ -156,6 +156,7 @@ ModifierTypeInfo modifierType_Lattice = {
 	/* structSize */        sizeof(LatticeModifierData),
 	/* type */              eModifierTypeType_OnlyDeform,
 	/* flags */             eModifierTypeFlag_AcceptsCVs |
+	                        eModifierTypeFlag_AcceptsLattice |
 	                        eModifierTypeFlag_SupportsEditmode,
 	/* copyData */          copyData,
 	/* deformVerts */       deformVerts,

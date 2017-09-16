@@ -49,7 +49,8 @@
 #include "DNA_view3d_types.h"
 #include "DNA_userdef_types.h"
 
-#include "BKE_blender.h"
+#include "BKE_blender_undo.h"
+#include "BKE_blender_version.h"
 #include "BKE_camera.h"
 #include "BKE_context.h"
 #include "BKE_colortools.h"
@@ -115,6 +116,7 @@ typedef struct RenderJob {
 	ScrArea *sa;
 	ColorManagedViewSettings view_settings;
 	ColorManagedDisplaySettings display_settings;
+	bool supports_glsl_draw;
 	bool interface_locked;
 } RenderJob;
 
@@ -209,7 +211,7 @@ static void image_buffer_rect_update(RenderJob *rj, RenderResult *rr, ImBuf *ibu
 			}
 			else {
 				if (rr->renlay == NULL) return;
-				rectf = RE_RenderLayerGetPass(rr->renlay, SCE_PASS_COMBINED, viewname);
+				rectf = RE_RenderLayerGetPass(rr->renlay, RE_PASSNAME_COMBINED, viewname);
 			}
 		}
 		if (rectf == NULL) return;
@@ -568,6 +570,7 @@ static void image_rect_update(void *rjv, RenderResult *rr, volatile rcti *renrec
 		 * operate with.
 		 */
 		if (rr->do_exr_tile ||
+		    !rj->supports_glsl_draw ||
 		    ibuf->channels == 1 ||
 		    U.image_draw_method != IMAGE_DRAW_METHOD_GLSL)
 		{
@@ -903,6 +906,7 @@ static int screen_render_invoke(bContext *C, wmOperator *op, const wmEvent *even
 	rj->orig_layer = 0;
 	rj->last_layer = 0;
 	rj->sa = sa;
+	rj->supports_glsl_draw = IMB_colormanagement_support_glsl_draw(&scene->view_settings);
 
 	BKE_color_managed_display_settings_copy(&rj->display_settings, &scene->display_settings);
 	BKE_color_managed_view_settings_copy(&rj->view_settings, &scene->view_settings);
@@ -1233,7 +1237,7 @@ static void render_view3d_startjob(void *customdata, short *stop, short *do_upda
 	use_border = render_view3d_disprect(rp->scene, rp->ar, rp->v3d,
 	                                    rp->rv3d, &cliprct);
 
-	if ((update_flag & (PR_UPDATE_RENDERSIZE | PR_UPDATE_DATABASE)) || rstats->convertdone == 0) {
+	if ((update_flag & (PR_UPDATE_RENDERSIZE | PR_UPDATE_DATABASE | PR_UPDATE_VIEW)) || rstats->convertdone == 0) {
 		RenderData rdata;
 
 		/* no osa, blur, seq, layers, savebuffer etc for preview render */
@@ -1481,7 +1485,7 @@ static void render_view3d_do(RenderEngine *engine, const bContext *C)
 void render_view3d_update(RenderEngine *engine, const bContext *C)
 {	
 	/* this shouldn't be needed and causes too many database rebuilds, but we
-	 * aren't actually tracking updates for all relevent datablocks so this is
+	 * aren't actually tracking updates for all relevant datablocks so this is
 	 * a catch-all for updates */
 	engine->update_flag |= RE_ENGINE_UPDATE_DATABASE;
 

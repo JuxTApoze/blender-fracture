@@ -60,8 +60,9 @@ typedef struct EditFont {
 	struct CharInfo *textbufinfo;
 	
 	/* array of rectangles & rotation */
-	EditFontSelBox *selboxes;
 	float textcurs[4][2];
+	EditFontSelBox *selboxes;
+	int selboxes_len;
 
 	/* positional vars relative to the textbuf, textbufinfo (not utf8 bytes)
 	 * a copy of these is kept in Curve, but use these in editmode */
@@ -81,6 +82,8 @@ struct VFont *BKE_vfont_builtin_get(void);
 struct VFont *BKE_vfont_load(struct Main *bmain, const char *filepath);
 struct VFont *BKE_vfont_load_exists_ex(struct Main *bmain, const char *filepath, bool *r_exists);
 struct VFont *BKE_vfont_load_exists(struct Main *bmain, const char *filepath);
+
+void BKE_vfont_make_local(struct Main *bmain, struct VFont *vfont, const bool lib_local);
 
 bool BKE_vfont_to_curve_ex(struct Main *bmain, struct Object *ob, int mode,
                            struct ListBase *r_nubase,

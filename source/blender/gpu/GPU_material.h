@@ -98,6 +98,7 @@ typedef enum GPUBuiltin {
 	GPU_PARTICLE_ANG_VELOCITY = (1 << 12),
 	GPU_LOC_TO_VIEW_MATRIX =    (1 << 13),
 	GPU_INVERSE_LOC_TO_VIEW_MATRIX = (1 << 14),
+	GPU_OBJECT_INFO =           (1 << 15)
 } GPUBuiltin;
 
 typedef enum GPUOpenGLBuiltin {
@@ -166,6 +167,9 @@ typedef enum GPUDynamicType {
 	GPU_DYNAMIC_LAMP_SPOTSIZE        = 10 | GPU_DYNAMIC_GROUP_LAMP,
 	GPU_DYNAMIC_LAMP_SPOTBLEND       = 11 | GPU_DYNAMIC_GROUP_LAMP,
 	GPU_DYNAMIC_LAMP_SPOTSCALE       = 12 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_COEFFCONST      = 13 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_COEFFLIN        = 14 | GPU_DYNAMIC_GROUP_LAMP,
+	GPU_DYNAMIC_LAMP_COEFFQUAD       = 15 | GPU_DYNAMIC_GROUP_LAMP,
 
 	GPU_DYNAMIC_SAMPLER_2DBUFFER     = 1  | GPU_DYNAMIC_GROUP_SAMPLER,
 	GPU_DYNAMIC_SAMPLER_2DIMAGE      = 2  | GPU_DYNAMIC_GROUP_SAMPLER,
@@ -189,7 +193,8 @@ typedef enum GPUDynamicType {
 	GPU_DYNAMIC_MAT_HARD             = 5  | GPU_DYNAMIC_GROUP_MAT,
 	GPU_DYNAMIC_MAT_EMIT             = 6  | GPU_DYNAMIC_GROUP_MAT,
 	GPU_DYNAMIC_MAT_AMB              = 7  | GPU_DYNAMIC_GROUP_MAT,
-	GPU_DYNAMIC_MAT_ALPHA            = 8  | GPU_DYNAMIC_GROUP_MAT
+	GPU_DYNAMIC_MAT_ALPHA            = 8  | GPU_DYNAMIC_GROUP_MAT,
+	GPU_DYNAMIC_MAT_MIR              = 9  | GPU_DYNAMIC_GROUP_MAT
 } GPUDynamicType;
 
 GPUNodeLink *GPU_attribute(CustomDataType type, const char *name);
@@ -209,6 +214,7 @@ bool GPU_stack_link(GPUMaterial *mat, const char *name, GPUNodeStack *in, GPUNod
 
 void GPU_material_output_link(GPUMaterial *material, GPUNodeLink *link);
 void GPU_material_enable_alpha(GPUMaterial *material);
+GPUBuiltin GPU_get_material_builtins(GPUMaterial *material);
 GPUBlendMode GPU_material_alpha_blend(GPUMaterial *material, float obcol[4]);
 
 /* High level functions to create and use GPU materials */
@@ -226,7 +232,7 @@ void GPU_material_bind(
         float viewmat[4][4], float viewinv[4][4], float cameraborder[4], bool scenelock);
 void GPU_material_bind_uniforms(
         GPUMaterial *material, float obmat[4][4], float viewmat[4][4], float obcol[4],
-        float autobumpscale, GPUParticleInfo *pi);
+        float autobumpscale, GPUParticleInfo *pi, float object_info[3]);
 void GPU_material_unbind(GPUMaterial *material);
 bool GPU_material_bound(GPUMaterial *material);
 struct Scene *GPU_material_scene(GPUMaterial *material);
@@ -237,6 +243,7 @@ void GPU_material_vertex_attributes(GPUMaterial *material,
 
 bool GPU_material_do_color_management(GPUMaterial *mat);
 bool GPU_material_use_new_shading_nodes(GPUMaterial *mat);
+bool GPU_material_use_world_space_shading(GPUMaterial *mat);
 
 /* Exported shading */
 
@@ -246,7 +253,7 @@ typedef struct GPUShadeInput {
 
 	GPUNodeLink *rgb, *specrgb, *vn, *view, *vcol, *ref;
 	GPUNodeLink *alpha, *refl, *spec, *emit, *har, *amb;
-	GPUNodeLink *spectra;
+	GPUNodeLink *spectra, *mir, *refcol;
 } GPUShadeInput;
 
 typedef struct GPUShadeResult {
@@ -278,6 +285,7 @@ typedef struct GPUInputUniform {
 	GPUDataType datatype;     /* type of uniform data */
 	struct Object *lamp;      /* when type=GPU_DYNAMIC_LAMP_... or GPU_DYNAMIC_SAMPLER_2DSHADOW */
 	struct Image *image;      /* when type=GPU_DYNAMIC_SAMPLER_2DIMAGE */
+	struct Material *material;/* when type=GPU_DYNAMIC_MAT_... */
 	int texnumber;            /* when type=GPU_DYNAMIC_SAMPLER, texture number: 0.. */
 	unsigned char *texpixels; /* for internally generated texture, pixel data in RGBA format */
 	int texsize;              /* size in pixel of the texture in texpixels buffer:
@@ -318,7 +326,8 @@ float *GPU_lamp_dynpersmat(GPULamp *lamp);
 
 void GPU_lamp_update(GPULamp *lamp, int lay, int hide, float obmat[4][4]);
 void GPU_lamp_update_colors(GPULamp *lamp, float r, float g, float b, float energy);
-void GPU_lamp_update_distance(GPULamp *lamp, float distance, float att1, float att2);
+void GPU_lamp_update_distance(GPULamp *lamp, float distance, float att1, float att2,
+                              float coeff_const, float coeff_lin, float coeff_quad);
 void GPU_lamp_update_spot(GPULamp *lamp, float spotsize, float spotblend);
 int GPU_lamp_shadow_layer(GPULamp *lamp);
 GPUNodeLink *GPU_lamp_get_data(
@@ -330,6 +339,7 @@ void GPU_mist_update_enable(short enable);
 void GPU_mist_update_values(int type, float start, float dist, float inten, float color[3]);
 void GPU_horizon_update_color(float color[3]);
 void GPU_ambient_update_color(float color[3]);
+void GPU_zenith_update_color(float color[3]);
 
 struct GPUParticleInfo
 {
@@ -337,6 +347,7 @@ struct GPUParticleInfo
 	float location[3];
 	float velocity[3];
 	float angular_velocity[3];
+	int random_id;
 };
 
 #ifdef WITH_OPENSUBDIV

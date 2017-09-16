@@ -72,7 +72,7 @@ void clip_graph_tracking_values_iterate_track(
 	BKE_movieclip_get_size(clip, &sc->user, &width, &height);
 
 	for (coord = 0; coord < 2; coord++) {
-		int i, prevfra = 0;
+		int i, prevfra = track->markers[0].framenr;
 		bool open = false;
 		float prevval = 0.0f;
 
@@ -175,20 +175,14 @@ void clip_graph_tracking_iterate(SpaceClip *sc, bool selected_only, bool include
 void clip_delete_track(bContext *C, MovieClip *clip, MovieTrackingTrack *track)
 {
 	MovieTracking *tracking = &clip->tracking;
-	MovieTrackingStabilization *stab = &tracking->stabilization;
 	MovieTrackingTrack *act_track = BKE_tracking_track_get_active(tracking);
 	ListBase *tracksbase = BKE_tracking_get_active_tracks(tracking);
-	bool has_bundle = false, update_stab = false;
+	bool has_bundle = false;
 	char track_name_escaped[MAX_NAME], prefix[MAX_NAME * 2];
+	const bool used_for_stabilization = (track->flag & (TRACK_USE_2D_STAB | TRACK_USE_2D_STAB_ROT));
 
 	if (track == act_track)
 		tracking->act_track = NULL;
-
-	if (track == stab->rot_track) {
-		stab->rot_track = NULL;
-
-		update_stab = true;
-	}
 
 	/* handle reconstruction display in 3d viewport */
 	if (track->flag & TRACK_HAS_BUNDLE)
@@ -207,8 +201,7 @@ void clip_delete_track(bContext *C, MovieClip *clip, MovieTrackingTrack *track)
 
 	WM_event_add_notifier(C, NC_MOVIECLIP | NA_EDITED, clip);
 
-	if (update_stab) {
-		tracking->stabilization.ok = false;
+	if (used_for_stabilization) {
 		WM_event_add_notifier(C, NC_MOVIECLIP | ND_DISPLAY, clip);
 	}
 

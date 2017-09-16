@@ -177,7 +177,7 @@ void image_preview_event(int event)
 
 		G.is_break = false;
 		G.scene->nodetree->timecursor = set_timecursor;
-		G.scene->nodetree->test_break = blender_test_break;
+		G.scene->nodetree->test_break = BKE_blender_test_break;
 		
 		BIF_store_spare();
 		
@@ -345,6 +345,13 @@ struct ImageUI_Data {
 	int rpass_index;
 };
 
+static struct ImageUI_Data *ui_imageuser_data_copy(const struct ImageUI_Data *rnd_pt_src)
+{
+	struct ImageUI_Data *rnd_pt_dst = MEM_mallocN(sizeof(*rnd_pt_src), __func__);
+	memcpy(rnd_pt_dst, rnd_pt_src, sizeof(*rnd_pt_src));
+	return rnd_pt_dst;
+}
+
 static void ui_imageuser_layer_menu(bContext *UNUSED(C), uiLayout *layout, void *rnd_pt)
 {
 	struct ImageUI_Data *rnd_data = rnd_pt;
@@ -421,7 +428,6 @@ static void ui_imageuser_pass_menu(bContext *UNUSED(C), uiLayout *layout, void *
 	RenderPass *rpass;
 	const char *fake_name;
 	int nr;
-	int passflag = 0;
 
 	/* may have been freed since drawing */
 	rr = BKE_image_acquire_renderresult(scene, image);
@@ -443,30 +449,31 @@ static void ui_imageuser_pass_menu(bContext *UNUSED(C), uiLayout *layout, void *
 	fake_name = ui_imageuser_pass_fake_name(rl);
 
 	if (fake_name) {
-		BLI_strncpy(rpass_fake.internal_name, fake_name, sizeof(rpass_fake.internal_name));
+		BLI_strncpy(rpass_fake.name, fake_name, sizeof(rpass_fake.name));
 		nr += 1;
 	}
+
+	ListBase added_passes;
+	BLI_listbase_clear(&added_passes);
 
 	/* rendered results don't have a Combined pass */
 	/* multiview: the ordering must be ascending, so the left-most pass is always the one picked */
 	for (rpass = rl ? rl->passes.first : NULL; rpass; rpass = rpass->next, nr++) {
-
 		/* just show one pass of each kind */
-		if (passflag & rpass->passtype)
+		if (BLI_findstring_ptr(&added_passes, rpass->name, offsetof(LinkData, data))) {
 			continue;
+		}
+		BLI_addtail(&added_passes, BLI_genericNodeN(rpass->name));
 
-		passflag |= rpass->passtype;
-
-final:
-		uiDefButS(block, UI_BTYPE_BUT_MENU, B_NOP, IFACE_(rpass->internal_name), 0, 0,
+		uiDefButS(block, UI_BTYPE_BUT_MENU, B_NOP, IFACE_(rpass->name), 0, 0,
 		          UI_UNIT_X * 5, UI_UNIT_X, &iuser->pass, (float) nr, 0.0, 0, -1, "");
 	}
 
+	BLI_freelistN(&added_passes);
+
 	if (fake_name) {
-		fake_name = NULL;
-		rpass = &rpass_fake;
-		nr = 0;
-		goto final;
+		uiDefButS(block, UI_BTYPE_BUT_MENU, B_NOP, IFACE_(rpass_fake.name), 0, 0,
+		          UI_UNIT_X * 5, UI_UNIT_X, &iuser->pass, 0.0f, 0.0, 0, -1, "");
 	}
 
 	BKE_image_release_renderresult(scene, image);
@@ -532,9 +539,10 @@ static void ui_imageuser_view_menu_multiview(bContext *UNUSED(C), uiLayout *layo
 }
 
 /* 5 layer button callbacks... */
-static void image_multi_cb(bContext *C, void *rr_v, void *iuser_v) 
+static void image_multi_cb(bContext *C, void *rnd_pt, void *rr_v)
 {
-	ImageUser *iuser = iuser_v;
+	struct ImageUI_Data *rnd_data = rnd_pt;
+	ImageUser *iuser = rnd_data->iuser;
 
 	BKE_image_multilayer_index(rr_v, iuser);
 	WM_event_add_notifier(C, NC_IMAGE | ND_DRAW, NULL);
@@ -574,6 +582,8 @@ static bool ui_imageuser_layer_menu_step(bContext *C, int direction, void *rnd_p
 	else {
 		BLI_assert(0);
 	}
+
+	BKE_image_release_renderresult(scene, image);
 
 	if (changed) {
 		BKE_image_multilayer_index(rr, iuser);
@@ -623,7 +633,7 @@ static bool ui_imageuser_pass_menu_step(bContext *C, int direction, void *rnd_pt
 		int rp_index = iuser->pass + 1;
 
 		for (rp = rpass->next; rp; rp = rp->next, rp_index++) {
-			if (rp->passtype != rpass->passtype) {
+			if (!STREQ(rp->name, rpass->name)) {
 				iuser->pass = rp_index;
 				changed = true;
 				break;
@@ -640,7 +650,7 @@ static bool ui_imageuser_pass_menu_step(bContext *C, int direction, void *rnd_pt
 		}
 
 		for (rp = rl->passes.first; rp; rp = rp->next, rp_index++) {
-			if (rp->passtype == rpass->passtype) {
+			if (STREQ(rp->name, rpass->name)) {
 				iuser->pass = rp_index - 1;
 				changed = true;
 				break;
@@ -662,10 +672,11 @@ static bool ui_imageuser_pass_menu_step(bContext *C, int direction, void *rnd_pt
 }
 
 /* 5 view button callbacks... */
-static void image_multiview_cb(bContext *C, void *ima_v, void *iuser_v)
+static void image_multiview_cb(bContext *C, void *rnd_pt, void *UNUSED(arg_v))
 {
-	Image *ima = ima_v;
-	ImageUser *iuser = iuser_v;
+	struct ImageUI_Data *rnd_data = rnd_pt;
+	Image *ima = rnd_data->image;
+	ImageUser *iuser = rnd_data->iuser;
 
 	BKE_image_multiview_index(ima, iuser);
 	WM_event_add_notifier(C, NC_IMAGE | ND_DRAW, NULL);
@@ -692,7 +703,7 @@ static void uiblock_layer_pass_buttons(
         uiLayout *layout, Image *image, RenderResult *rr, ImageUser *iuser, int w,
         short *render_slot)
 {
-	static struct ImageUI_Data rnd_pt;  /* XXX, workaround */
+	struct ImageUI_Data rnd_pt_local, *rnd_pt = NULL;
 	uiBlock *block = uiLayoutGetBlock(layout);
 	uiBut *but;
 	RenderLayer *rl = NULL;
@@ -701,6 +712,10 @@ static void uiblock_layer_pass_buttons(
 	const char *display_name = "";
 	const bool show_stereo = (iuser->flag & IMA_SHOW_STEREO) != 0;
 
+	if (iuser->scene == NULL) {
+		return;
+	}
+
 	uiLayoutRow(layout, true);
 
 	/* layer menu is 1/3 larger than pass */
@@ -708,10 +723,10 @@ static void uiblock_layer_pass_buttons(
 	wmenu2 = (3 * w) / 5;
 	wmenu3 = (3 * w) / 6;
 	wmenu4 = (3 * w) / 6;
-	
-	rnd_pt.image = image;
-	rnd_pt.iuser = iuser;
-	rnd_pt.rpass_index = 0;
+
+	rnd_pt_local.image = image;
+	rnd_pt_local.iuser = iuser;
+	rnd_pt_local.rpass_index = 0;
 
 	/* menu buts */
 	if (render_slot) {
@@ -723,10 +738,12 @@ static void uiblock_layer_pass_buttons(
 			BLI_snprintf(str, sizeof(str), IFACE_("Slot %d"), *render_slot + 1);
 		}
 
+		rnd_pt = ui_imageuser_data_copy(&rnd_pt_local);
 		but = uiDefMenuBut(block, ui_imageuser_slot_menu, image, str, 0, 0, wmenu1, UI_UNIT_Y, TIP_("Select Slot"));
 		UI_but_func_menu_step_set(but, ui_imageuser_slot_menu_step);
-		UI_but_func_set(but, image_multi_cb, rr, iuser);
+		UI_but_funcN_set(but, image_multi_cb, rnd_pt, rr);
 		UI_but_type_set_menu_from_pulldown(but);
+		rnd_pt = NULL;
 	}
 
 	if (rr) {
@@ -738,27 +755,33 @@ static void uiblock_layer_pass_buttons(
 		fake_name = ui_imageuser_layer_fake_name(rr);
 		rpass_index = iuser->layer  - (fake_name ? 1 : 0);
 		rl = BLI_findlink(&rr->layers, rpass_index);
-		rnd_pt.rpass_index = rpass_index;
+		rnd_pt_local.rpass_index = rpass_index;
 
 		if (RE_layers_have_name(rr)) {
 			display_name = rl ? rl->name : (fake_name ? fake_name : "");
-			but = uiDefMenuBut(block, ui_imageuser_layer_menu, &rnd_pt, display_name,
-			                   0, 0, wmenu2, UI_UNIT_Y, TIP_("Select Layer"));
+			rnd_pt = ui_imageuser_data_copy(&rnd_pt_local);
+			but = uiDefMenuBut(
+			        block, ui_imageuser_layer_menu, rnd_pt, display_name,
+			        0, 0, wmenu2, UI_UNIT_Y, TIP_("Select Layer"));
 			UI_but_func_menu_step_set(but, ui_imageuser_layer_menu_step);
-			UI_but_func_set(but, image_multi_cb, rr, iuser);
+			UI_but_funcN_set(but, image_multi_cb, rnd_pt, rr);
 			UI_but_type_set_menu_from_pulldown(but);
+			rnd_pt = NULL;
 		}
 
 		/* pass */
 		fake_name = ui_imageuser_pass_fake_name(rl);
 		rpass = (rl ? BLI_findlink(&rl->passes, iuser->pass  - (fake_name ? 1 : 0)) : NULL);
 
-		display_name = rpass ? rpass->internal_name : (fake_name ? fake_name : "");
-		but = uiDefMenuBut(block, ui_imageuser_pass_menu, &rnd_pt, IFACE_(display_name),
-		                   0, 0, wmenu3, UI_UNIT_Y, TIP_("Select Pass"));
+		display_name = rpass ? rpass->name : (fake_name ? fake_name : "");
+		rnd_pt = ui_imageuser_data_copy(&rnd_pt_local);
+		but = uiDefMenuBut(
+		        block, ui_imageuser_pass_menu, rnd_pt, IFACE_(display_name),
+		        0, 0, wmenu3, UI_UNIT_Y, TIP_("Select Pass"));
 		UI_but_func_menu_step_set(but, ui_imageuser_pass_menu_step);
-		UI_but_func_set(but, image_multi_cb, rr, iuser);
+		UI_but_funcN_set(but, image_multi_cb, rnd_pt, rr);
 		UI_but_type_set_menu_from_pulldown(but);
+		rnd_pt = NULL;
 
 		/* view */
 		if (BLI_listbase_count_ex(&rr->views, 2) > 1 &&
@@ -767,9 +790,13 @@ static void uiblock_layer_pass_buttons(
 			rview = BLI_findlink(&rr->views, iuser->view);
 			display_name = rview ? rview->name : "";
 
-			but = uiDefMenuBut(block, ui_imageuser_view_menu_rr, &rnd_pt, display_name, 0, 0, wmenu4, UI_UNIT_Y, TIP_("Select View"));
-			UI_but_func_set(but, image_multi_cb, rr, iuser);
+			rnd_pt = ui_imageuser_data_copy(&rnd_pt_local);
+			but = uiDefMenuBut(
+			        block, ui_imageuser_view_menu_rr, rnd_pt, display_name,
+			        0, 0, wmenu4, UI_UNIT_Y, TIP_("Select View"));
+			UI_but_funcN_set(but, image_multi_cb, rnd_pt, rr);
 			UI_but_type_set_menu_from_pulldown(but);
+			rnd_pt = NULL;
 		}
 	}
 
@@ -787,9 +814,13 @@ static void uiblock_layer_pass_buttons(
 			}
 		}
 
-		but = uiDefMenuBut(block, ui_imageuser_view_menu_multiview, &rnd_pt, display_name, 0, 0, wmenu1, UI_UNIT_Y, TIP_("Select View"));
-		UI_but_func_set(but, image_multiview_cb, image, iuser);
+		rnd_pt = ui_imageuser_data_copy(&rnd_pt_local);
+		but = uiDefMenuBut(
+		        block, ui_imageuser_view_menu_multiview, rnd_pt, display_name,
+		        0, 0, wmenu1, UI_UNIT_Y, TIP_("Select View"));
+		UI_but_funcN_set(but, image_multiview_cb, rnd_pt, NULL);
 		UI_but_type_set_menu_from_pulldown(but);
+		rnd_pt = NULL;
 	}
 }
 
@@ -1177,7 +1208,7 @@ void uiTemplateImageStereo3d(uiLayout *layout, PointerRNA *stereo3d_format_ptr)
 		case S3D_DISPLAY_SIDEBYSIDE:
 		{
 			uiItemR(col, stereo3d_format_ptr, "use_sidebyside_crosseyed", 0, NULL, ICON_NONE);
-			/* fall-through */
+			ATTR_FALLTHROUGH;
 		}
 		case S3D_DISPLAY_TOPBOTTOM:
 		{
@@ -1303,7 +1334,7 @@ void IMAGE_OT_properties(wmOperatorType *ot)
 {
 	ot->name = "Properties";
 	ot->idname = "IMAGE_OT_properties";
-	ot->description = "Toggle display properties panel";
+	ot->description = "Toggle the properties region visibility";
 	
 	ot->exec = image_properties_toggle_exec;
 	ot->poll = ED_operator_image_active;

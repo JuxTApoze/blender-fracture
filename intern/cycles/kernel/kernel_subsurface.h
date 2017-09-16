@@ -85,7 +85,11 @@ ccl_device ShaderClosure *subsurface_scatter_pick_closure(KernelGlobals *kg, Sha
 	return NULL;
 }
 
-ccl_device float3 subsurface_scatter_eval(ShaderData *sd, ShaderClosure *sc, float disk_r, float r, bool all)
+ccl_device_inline float3 subsurface_scatter_eval(ShaderData *sd,
+                                                 ShaderClosure *sc,
+                                                 float disk_r,
+                                                 float r,
+                                                 bool all)
 {
 #ifdef BSSRDF_MULTI_EVAL
 	/* this is the veach one-sample model with balance heuristic, some pdf
@@ -136,28 +140,45 @@ ccl_device float3 subsurface_scatter_eval(ShaderData *sd, ShaderClosure *sc, flo
 }
 
 /* replace closures with a single diffuse bsdf closure after scatter step */
-ccl_device void subsurface_scatter_setup_diffuse_bsdf(ShaderData *sd, float3 weight, bool hit, float3 N)
+ccl_device void subsurface_scatter_setup_diffuse_bsdf(ShaderData *sd, ShaderClosure *sc, float3 weight, bool hit, float3 N)
 {
 	sd->flag &= ~SD_CLOSURE_FLAGS;
 	sd->randb_closure = 0.0f;
+	sd->num_closure = 0;
+	sd->num_closure_extra = 0;
 
 	if(hit) {
-		ShaderClosure *sc = &sd->closure[0];
-		sd->num_closure = 1;
+		Bssrdf *bssrdf = (Bssrdf *)sc;
+#ifdef __PRINCIPLED__
+		if(bssrdf->type == CLOSURE_BSSRDF_PRINCIPLED_ID) {
+			PrincipledDiffuseBsdf *bsdf = (PrincipledDiffuseBsdf*)bsdf_alloc(sd, sizeof(PrincipledDiffuseBsdf), weight);
 
-		sc->weight = weight;
-		sc->sample_weight = 1.0f;
-		sc->data0 = 0.0f;
-		sc->data1 = 0.0f;
-		sc->N = N;
-		sd->flag |= bsdf_diffuse_setup(sc);
+			if(bsdf) {
+				bsdf->N = N;
+				bsdf->roughness = bssrdf->roughness;
+				sd->flag |= bsdf_principled_diffuse_setup(bsdf);
 
-		/* replace CLOSURE_BSDF_DIFFUSE_ID with this special ID so render passes
-		 * can recognize it as not being a regular diffuse closure */
-		sc->type = CLOSURE_BSDF_BSSRDF_ID;
+				/* replace CLOSURE_BSDF_PRINCIPLED_DIFFUSE_ID with this special ID so render passes
+				 * can recognize it as not being a regular Disney principled diffuse closure */
+				bsdf->type = CLOSURE_BSDF_BSSRDF_PRINCIPLED_ID;
+			}
+		}
+		else if(CLOSURE_IS_BSDF_BSSRDF(bssrdf->type) ||
+		        CLOSURE_IS_BSSRDF(bssrdf->type))
+#endif  /* __PRINCIPLED__ */
+		{
+			DiffuseBsdf *bsdf = (DiffuseBsdf*)bsdf_alloc(sd, sizeof(DiffuseBsdf), weight);
+
+			if(bsdf) {
+				bsdf->N = N;
+				sd->flag |= bsdf_diffuse_setup(bsdf);
+
+				/* replace CLOSURE_BSDF_DIFFUSE_ID with this special ID so render passes
+				 * can recognize it as not being a regular diffuse closure */
+				bsdf->type = CLOSURE_BSDF_BSSRDF_ID;
+			}
+		}
 	}
-	else
-		sd->num_closure = 0;
 }
 
 /* optionally do blurring of color and/or bump mapping, at the cost of a shader evaluation */
@@ -184,7 +205,7 @@ ccl_device float3 subsurface_color_pow(float3 color, float exponent)
 
 ccl_device void subsurface_color_bump_blur(KernelGlobals *kg,
                                            ShaderData *sd,
-                                           PathState *state,
+                                           ccl_addr_space PathState *state,
                                            int state_flag,
                                            float3 *eval,
                                            float3 *N)
@@ -198,7 +219,7 @@ ccl_device void subsurface_color_bump_blur(KernelGlobals *kg,
 
 	if(bump || texture_blur > 0.0f) {
 		/* average color and normal at incoming point */
-		shader_eval_surface(kg, sd, state, 0.0f, state_flag, SHADER_CONTEXT_SSS);
+		shader_eval_surface(kg, sd, NULL, state, 0.0f, state_flag, SHADER_CONTEXT_SSS);
 		float3 in_color = shader_bssrdf_sum(sd, (bump)? N: NULL, NULL);
 
 		/* we simply divide out the average color and multiply with the average
@@ -217,12 +238,12 @@ ccl_device void subsurface_color_bump_blur(KernelGlobals *kg,
 /* Subsurface scattering step, from a point on the surface to other
  * nearby points on the same object.
  */
-ccl_device int subsurface_scatter_multi_intersect(
+ccl_device_inline int subsurface_scatter_multi_intersect(
         KernelGlobals *kg,
-        SubsurfaceIntersection* ss_isect,
+        SubsurfaceIntersection *ss_isect,
         ShaderData *sd,
         ShaderClosure *sc,
-        uint *lcg_state,
+        RNG *lcg_state,
         float disk_u,
         float disk_v,
         bool all)
@@ -276,7 +297,12 @@ ccl_device int subsurface_scatter_multi_intersect(
 	float3 disk_P = (disk_r*cosf(phi)) * disk_T + (disk_r*sinf(phi)) * disk_B;
 
 	/* create ray */
+#ifdef __SPLIT_KERNEL__
+	Ray ray_object = ss_isect->ray;
+	Ray *ray = &ray_object;
+#else
 	Ray *ray = &ss_isect->ray;
+#endif
 	ray->P = sd->P + disk_N*disk_height + disk_P;
 	ray->D = -disk_N;
 	ray->t = 2.0f*disk_height;
@@ -287,7 +313,7 @@ ccl_device int subsurface_scatter_multi_intersect(
 	/* intersect with the same object. if multiple intersections are found it
 	 * will use at most BSSRDF_MAX_HITS hits, a random subset of all hits */
 	scene_intersect_subsurface(kg,
-	                           ray,
+	                           *ray,
 	                           ss_isect,
 	                           sd->object,
 	                           lcg_state,
@@ -297,20 +323,20 @@ ccl_device int subsurface_scatter_multi_intersect(
 	for(int hit = 0; hit < num_eval_hits; hit++) {
 		/* Quickly retrieve P and Ng without setting up ShaderData. */
 		float3 hit_P;
-		if(ccl_fetch(sd, type) & PRIMITIVE_TRIANGLE) {
+		if(sd->type & PRIMITIVE_TRIANGLE) {
 			hit_P = triangle_refine_subsurface(kg,
 			                                   sd,
 			                                   &ss_isect->hits[hit],
 			                                   ray);
 		}
 #ifdef __OBJECT_MOTION__
-		else  if(ccl_fetch(sd, type) & PRIMITIVE_MOTION_TRIANGLE) {
+		else  if(sd->type & PRIMITIVE_MOTION_TRIANGLE) {
 			float3 verts[3];
 			motion_triangle_vertices(
 			        kg,
-			        ccl_fetch(sd, object),
+			        sd->object,
 			        kernel_tex_fetch(__prim_index, ss_isect->hits[hit].prim),
-			        ccl_fetch(sd, time),
+			        sd->time,
 			        verts);
 			hit_P = motion_triangle_refine_subsurface(kg,
 			                                          sd,
@@ -319,6 +345,10 @@ ccl_device int subsurface_scatter_multi_intersect(
 			                                          verts);
 		}
 #endif  /* __OBJECT_MOTION__ */
+		else {
+			ss_isect->weight[hit] = make_float3(0.0f, 0.0f, 0.0f);
+			continue;
+		}
 
 		float3 hit_Ng = ss_isect->Ng[hit];
 		if(ss_isect->hits[hit].object != OBJECT_NONE) {
@@ -346,20 +376,37 @@ ccl_device int subsurface_scatter_multi_intersect(
 		ss_isect->weight[hit] = eval;
 	}
 
+#ifdef __SPLIT_KERNEL__
+	ss_isect->ray = *ray;
+#endif
+
 	return num_eval_hits;
 }
 
-ccl_device void subsurface_scatter_multi_setup(KernelGlobals *kg,
-                                               SubsurfaceIntersection* ss_isect,
-                                               int hit,
-                                               ShaderData *sd,
-                                               PathState *state,
-                                               int state_flag,
-                                               ShaderClosure *sc,
-                                               bool all)
+ccl_device_noinline void subsurface_scatter_multi_setup(
+        KernelGlobals *kg,
+        SubsurfaceIntersection* ss_isect,
+        int hit,
+        ShaderData *sd,
+        ccl_addr_space PathState *state,
+        int state_flag,
+        ShaderClosure *sc,
+        bool all)
 {
+#ifdef __SPLIT_KERNEL__
+	Ray ray_object = ss_isect->ray;
+	Ray *ray = &ray_object;
+#else
+	Ray *ray = &ss_isect->ray;
+#endif
+
+	/* Workaround for AMD GPU OpenCL compiler. Most probably cache bypass issue. */
+#if defined(__SPLIT_KERNEL__) && defined(__KERNEL_OPENCL_AMD__) && defined(__KERNEL_GPU__)
+	kernel_split_params.dummy_sd_flag = sd->flag;
+#endif
+
 	/* Setup new shading point. */
-	shader_setup_from_subsurface(kg, sd, &ss_isect->hits[hit], &ss_isect->ray);
+	shader_setup_from_subsurface(kg, sd, &ss_isect->hits[hit], ray);
 
 	/* Optionally blur colors and bump mapping. */
 	float3 weight = ss_isect->weight[hit];
@@ -367,11 +414,11 @@ ccl_device void subsurface_scatter_multi_setup(KernelGlobals *kg,
 	subsurface_color_bump_blur(kg, sd, state, state_flag, &weight, &N);
 
 	/* Setup diffuse BSDF. */
-	subsurface_scatter_setup_diffuse_bsdf(sd, weight, true, N);
+	subsurface_scatter_setup_diffuse_bsdf(sd, sc, weight, true, N);
 }
 
 /* subsurface scattering step, from a point on the surface to another nearby point on the same object */
-ccl_device void subsurface_scatter_step(KernelGlobals *kg, ShaderData *sd, PathState *state,
+ccl_device void subsurface_scatter_step(KernelGlobals *kg, ShaderData *sd, ccl_addr_space PathState *state,
 	int state_flag, ShaderClosure *sc, uint *lcg_state, float disk_u, float disk_v, bool all)
 {
 	float3 eval = make_float3(0.0f, 0.0f, 0.0f);
@@ -426,12 +473,16 @@ ccl_device void subsurface_scatter_step(KernelGlobals *kg, ShaderData *sd, PathS
 	/* intersect with the same object. if multiple intersections are
 	 * found it will randomly pick one of them */
 	SubsurfaceIntersection ss_isect;
-	scene_intersect_subsurface(kg, &ray, &ss_isect, sd->object, lcg_state, 1);
+	scene_intersect_subsurface(kg, ray, &ss_isect, sd->object, lcg_state, 1);
 
 	/* evaluate bssrdf */
 	if(ss_isect.num_hits > 0) {
 		float3 origP = sd->P;
 
+		/* Workaround for AMD GPU OpenCL compiler. Most probably cache bypass issue. */
+#if defined(__SPLIT_KERNEL__) && defined(__KERNEL_OPENCL_AMD__) && defined(__KERNEL_GPU__)
+		kernel_split_params.dummy_sd_flag = sd->flag;
+#endif
 		/* setup new shading point */
 		shader_setup_from_subsurface(kg, sd, &ss_isect.hits[0], &ray);
 
@@ -457,7 +508,7 @@ ccl_device void subsurface_scatter_step(KernelGlobals *kg, ShaderData *sd, PathS
 	subsurface_color_bump_blur(kg, sd, state, state_flag, &eval, &N);
 
 	/* setup diffuse bsdf */
-	subsurface_scatter_setup_diffuse_bsdf(sd, eval, (ss_isect.num_hits > 0), N);
+	subsurface_scatter_setup_diffuse_bsdf(sd, sc, eval, (ss_isect.num_hits > 0), N);
 }
 
 CCL_NAMESPACE_END

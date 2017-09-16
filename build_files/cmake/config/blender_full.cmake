@@ -4,6 +4,7 @@
 #   cmake -C../blender/build_files/cmake/config/blender_full.cmake  ../blender
 #
 
+set(WITH_ALEMBIC             ON  CACHE BOOL "" FORCE)
 set(WITH_BUILDINFO           ON  CACHE BOOL "" FORCE)
 set(WITH_BULLET              ON  CACHE BOOL "" FORCE)
 set(WITH_CODEC_AVI           ON  CACHE BOOL "" FORCE)
@@ -11,6 +12,7 @@ set(WITH_CODEC_FFMPEG        ON  CACHE BOOL "" FORCE)
 set(WITH_CODEC_SNDFILE       ON  CACHE BOOL "" FORCE)
 set(WITH_CYCLES              ON  CACHE BOOL "" FORCE)
 set(WITH_CYCLES_OSL          ON  CACHE BOOL "" FORCE)
+set(WITH_CYCLES_OPENSUBDIV   ON  CACHE BOOL "" FORCE)
 set(WITH_FFTW3               ON  CACHE BOOL "" FORCE)
 set(WITH_LIBMV               ON  CACHE BOOL "" FORCE)
 set(WITH_LIBMV_SCHUR_SPECIALIZATIONS ON CACHE BOOL "" FORCE)
@@ -54,23 +56,19 @@ set(WITH_PLAYER              ON  CACHE BOOL "" FORCE)
 set(WITH_MEM_JEMALLOC        ON  CACHE BOOL "" FORCE)
 
 
-# platform dependant options
+# platform dependent options
 if(UNIX AND NOT APPLE)
 	set(WITH_JACK                ON  CACHE BOOL "" FORCE)
 	set(WITH_DOC_MANPAGE         ON  CACHE BOOL "" FORCE)
 	set(WITH_OPENSUBDIV          ON  CACHE BOOL "" FORCE)
 elseif(WIN32)
 	set(WITH_JACK                OFF CACHE BOOL "" FORCE)
-	if(NOT CMAKE_COMPILER_IS_GNUCC)
-		set(WITH_OPENSUBDIV          ON  CACHE BOOL "" FORCE)
-	else()
-		# MinGW exceptions
-		set(WITH_OPENSUBDIV          OFF CACHE BOOL "" FORCE)
-		set(WITH_CODEC_SNDFILE       OFF CACHE BOOL "" FORCE)
-		set(WITH_CYCLES_OSL          OFF CACHE BOOL "" FORCE)
-	endif()
-elseif (APPLE)
+	set(WITH_OPENSUBDIV          ON  CACHE BOOL "" FORCE)
+elseif(APPLE)
 	set(WITH_JACK                ON  CACHE BOOL "" FORCE)
-	set(WITH_CODEC_QUICKTIME     ON  CACHE BOOL "" FORCE)
+	set(WITH_CODEC_QUICKTIME     OFF CACHE BOOL "" FORCE)
 	set(WITH_OPENSUBDIV          OFF CACHE BOOL "" FORCE)
+
+#	include("${CMAKE_CURRENT_SOURCE_DIR}/../platform/platform_apple_xcode.cmake")
+#	apple_check_quicktime()
 endif()

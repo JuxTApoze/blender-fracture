@@ -76,6 +76,8 @@
 #include "BKE_material.h"
 #include "BKE_key.h"
 #include "BKE_library.h"
+#include "BKE_library_query.h"
+#include "BKE_library_remap.h"
 #include "BKE_depsgraph.h"
 #include "BKE_modifier.h"
 #include "BKE_mesh.h"
@@ -140,6 +142,11 @@ int count_particles_mod(ParticleSystem *psys, int totgr, int cur)
  * chunk, windows' memory allocater fails to find big blocks of memory often */
 
 #define PATH_CACHE_BUF_SIZE 1024
+
+static ParticleCacheKey *pcache_key_segment_endpoint_safe(ParticleCacheKey *key)
+{
+	return (key->segments > 0) ? (key + (key->segments - 1)) : key;
+}
 
 static ParticleCacheKey **psys_alloc_path_cache_buffers(ListBase *bufs, int tot, int totkeys)
 {
@@ -246,11 +253,16 @@ struct LatticeDeformData *psys_create_lattice_deform_data(ParticleSimulationData
 	if (psys_in_edit_mode(sim->scene, sim->psys) == 0) {
 		Object *lattice = NULL;
 		ModifierData *md = (ModifierData *)psys_get_modifier(sim->ob, sim->psys);
+		int mode = G.is_rendering ? eModifierMode_Render : eModifierMode_Realtime;
 
 		for (; md; md = md->next) {
 			if (md->type == eModifierType_Lattice) {
-				LatticeModifierData *lmd = (LatticeModifierData *)md;
-				lattice = lmd->object;
+				if (md->mode & mode) {
+					LatticeModifierData *lmd = (LatticeModifierData *)md;
+					lattice = lmd->object;
+					sim->psys->lattice_strength = lmd->strength;
+				}
+
 				break;
 			}
 		}
@@ -278,7 +290,7 @@ bool psys_in_edit_mode(Scene *scene, ParticleSystem *psys)
 {
 	return (scene->basact && (scene->basact->object->mode & OB_MODE_PARTICLE_EDIT) && psys == psys_get_current((scene->basact)->object) && (psys->edit || psys->pointcache->edit) && !psys->renderdata);
 }
-bool psys_check_enabled(Object *ob, ParticleSystem *psys)
+bool psys_check_enabled(Object *ob, ParticleSystem *psys, const bool use_render_params)
 {
 	ParticleSystemModifierData *psmd;
 
@@ -286,7 +298,7 @@ bool psys_check_enabled(Object *ob, ParticleSystem *psys)
 		return 0;
 
 	psmd = psys_get_modifier(ob, psys);
-	if (psys->renderdata || G.is_rendering) {
+	if (psys->renderdata || use_render_params) {
 		if (!(psmd->modifier.mode & eModifierMode_Render))
 			return 0;
 	}
@@ -311,16 +323,24 @@ void psys_check_group_weights(ParticleSettings *part)
 	int current = 0;
 
 	if (part->ren_as == PART_DRAW_GR && part->dup_group && part->dup_group->gobject.first) {
-		/* first remove all weights that don't have an object in the group */
+		/* First try to find NULL objects from their index,
+		 * and remove all weights that don't have an object in the group. */
 		dw = part->dupliweights.first;
 		while (dw) {
-			if (!BKE_group_object_exists(part->dup_group, dw->ob)) {
-				tdw = dw->next;
-				BLI_freelinkN(&part->dupliweights, dw);
-				dw = tdw;
+			if (dw->ob == NULL || !BKE_group_object_exists(part->dup_group, dw->ob)) {
+				go = (GroupObject *)BLI_findlink(&part->dup_group->gobject, dw->index);
+				if (go) {
+					dw->ob = go->ob;
+				}
+				else {
+					tdw = dw->next;
+					BLI_freelinkN(&part->dupliweights, dw);
+					dw = tdw;
+				}
 			}
-			else
+			else {
 				dw = dw->next;
+			}
 		}
 
 		/* then add objects in the group to new list */
@@ -371,12 +391,17 @@ static void fluid_free_settings(SPHFluidSettings *fluid)
 		MEM_freeN(fluid); 
 }
 
+/** Free (or release) any data used by this particle settings (does not free the partsett itself). */
 void BKE_particlesettings_free(ParticleSettings *part)
 {
-	MTex *mtex;
 	int a;
-	BKE_animdata_free(&part->id);
+
+	BKE_animdata_free((ID *)part, false);
 	
+	for (a = 0; a < MAX_MTEX; a++) {
+		MEM_SAFE_FREE(part->mtex[a]);
+	}
+
 	if (part->clumpcurve)
 		curvemapping_free(part->clumpcurve);
 	if (part->roughcurve)
@@ -385,21 +410,12 @@ void BKE_particlesettings_free(ParticleSettings *part)
 	free_partdeflect(part->pd);
 	free_partdeflect(part->pd2);
 
-	if (part->effector_weights)
-		MEM_freeN(part->effector_weights);
+	MEM_SAFE_FREE(part->effector_weights);
 
 	BLI_freelistN(&part->dupliweights);
 
 	boid_free_settings(part->boids);
 	fluid_free_settings(part->fluid);
-
-	for (a = 0; a < MAX_MTEX; a++) {
-		mtex = part->mtex[a];
-		if (mtex && mtex->tex)
-			id_us_min(&mtex->tex->id);
-		if (mtex)
-			MEM_freeN(mtex);
-	}
 }
 
 void free_hair(Object *UNUSED(ob), ParticleSystem *psys, int dynamics)
@@ -492,7 +508,9 @@ void psys_free_particles(ParticleSystem *psys)
 	PARTICLE_P;
 
 	if (psys->particles) {
-		if (psys->part->type == PART_HAIR) {
+		/* Even though psys->part should never be NULL, this can happen as an exception during deletion.
+		 * See ID_REMAP_SKIP/FORCE/FLAG_NEVER_NULL_USAGE in BKE_library_remap. */
+		if (psys->part && psys->part->type == PART_HAIR) {
 			LOOP_PARTICLES {
 				if (pa->hair)
 					MEM_freeN(pa->hair);
@@ -568,10 +586,7 @@ void psys_free(Object *ob, ParticleSystem *psys)
 		if (!nr)
 			ob->transflag &= ~OB_DUPLIPARTS;
 
-		if (psys->part) {
-			id_us_min(&psys->part->id);
-			psys->part = NULL;
-		}
+		psys->part = NULL;
 
 		BKE_ptcache_free_list(&psys->ptcaches);
 		psys->pointcache = NULL;
@@ -580,7 +595,7 @@ void psys_free(Object *ob, ParticleSystem *psys)
 
 		BLI_bvhtree_free(psys->bvhtree);
 		BLI_kdtree_free(psys->tree);
- 
+
 		if (psys->fluid_springs)
 			MEM_freeN(psys->fluid_springs);
 
@@ -623,8 +638,9 @@ void psys_render_set(Object *ob, ParticleSystem *psys, float viewmat[4][4], floa
 	data->childcachebufs.last = psys->childcachebufs.last;
 	data->totchildcache = psys->totchildcache;
 
-	if (psmd->dm_final)
-		data->dm = CDDM_copy(psmd->dm_final);
+	if (psmd->dm_final) {
+		data->dm = CDDM_copy_with_tessface(psmd->dm_final);
+	}
 	data->totdmvert = psmd->totdmvert;
 	data->totdmedge = psmd->totdmedge;
 	data->totdmface = psmd->totdmface;
@@ -877,6 +893,9 @@ static void get_pointcache_keys_for_time(Object *UNUSED(ob), PointCache *cache, 
 
 			index2 = BKE_ptcache_mem_index_find(pm, index);
 			index1 = BKE_ptcache_mem_index_find(pm->prev, index);
+			if (index2 < 0) {
+				return;
+			}
 
 			BKE_ptcache_make_particle_key(key2, index2, pm->data, (float)pm->frame);
 			if (index1 < 0)
@@ -887,6 +906,9 @@ static void get_pointcache_keys_for_time(Object *UNUSED(ob), PointCache *cache, 
 		else if (cache->mem_cache.first) {
 			pm = cache->mem_cache.first;
 			index2 = BKE_ptcache_mem_index_find(pm, index);
+			if (index2 < 0) {
+				return;
+			}
 			BKE_ptcache_make_particle_key(key2, index2, pm->data, (float)pm->frame);
 			copy_particle_key(key1, key2, 1);
 		}
@@ -1422,13 +1444,19 @@ int psys_particle_dm_face_lookup(
 {
 	MFace *mtessface_final;
 	OrigSpaceFace *osface_final;
-	int totface_final;
 	int pindex_orig;
 	float uv[2], (*faceuv)[2];
 
 	const int *index_mf_to_mpoly_deformed = NULL;
 	const int *index_mf_to_mpoly = NULL;
 	const int *index_mp_to_orig = NULL;
+
+	const int totface_final = dm_final->getNumTessFaces(dm_final);
+	const int totface_deformed = dm_deformed ? dm_deformed->getNumTessFaces(dm_deformed) : totface_final;
+
+	if (ELEM(0, totface_final, totface_deformed)) {
+		return DMCACHE_NOTFOUND;
+	}
 
 	index_mf_to_mpoly = dm_final->getTessFaceDataArray(dm_final, CD_ORIGINDEX);
 	index_mp_to_orig = dm_final->getPolyDataArray(dm_final, CD_ORIGINDEX);
@@ -1450,11 +1478,6 @@ int psys_particle_dm_face_lookup(
 	}
 
 	index_mf_to_mpoly_deformed = NULL;
-
-	totface_final = dm_final->getNumTessFaces(dm_final);
-	if (!totface_final) {
-		return DMCACHE_NOTFOUND;
-	}
 
 	mtessface_final = dm_final->getTessFaceArray(dm_final);
 	osface_final = dm_final->getTessFaceDataArray(dm_final, CD_ORIGSPACE);
@@ -2008,7 +2031,7 @@ float *psys_cache_vgroup(DerivedMesh *dm, ParticleSystem *psys, int vgroup)
 	}
 	return vg;
 }
-void psys_find_parents(ParticleSimulationData *sim)
+void psys_find_parents(ParticleSimulationData *sim, const bool use_render_params)
 {
 	ParticleSystem *psys = sim->psys;
 	ParticleSettings *part = sim->psys->part;
@@ -2020,7 +2043,7 @@ void psys_find_parents(ParticleSimulationData *sim)
 	int from = PART_FROM_FACE;
 	totparent = (int)(totchild * part->parents * 0.3f);
 
-	if ((sim->psys->renderdata || G.is_rendering) && part->child_nbr && part->ren_child_nbr)
+	if ((sim->psys->renderdata || use_render_params) && part->child_nbr && part->ren_child_nbr)
 		totparent *= (float)part->child_nbr / (float)part->ren_child_nbr;
 
 	/* hard limit, workaround for it being ignored above */
@@ -2051,7 +2074,9 @@ void psys_find_parents(ParticleSimulationData *sim)
 	BLI_kdtree_free(tree);
 }
 
-static bool psys_thread_context_init_path(ParticleThreadContext *ctx, ParticleSimulationData *sim, Scene *scene, float cfra, int editupdate)
+static bool psys_thread_context_init_path(
+        ParticleThreadContext *ctx, ParticleSimulationData *sim, Scene *scene,
+        float cfra, const bool editupdate, const bool use_render_params)
 {
 	ParticleSystem *psys = sim->psys;
 	ParticleSettings *part = psys->part;
@@ -2065,7 +2090,7 @@ static bool psys_thread_context_init_path(ParticleThreadContext *ctx, ParticleSi
 	if (psys_in_edit_mode(scene, psys)) {
 		ParticleEditSettings *pset = &scene->toolsettings->particle;
 
-		if ((psys->renderdata == 0 && G.is_rendering == 0) && (psys->edit == NULL || pset->flag & PE_DRAW_PART) == 0)
+		if ((psys->renderdata == 0 && use_render_params == 0) && (psys->edit == NULL || pset->flag & PE_DRAW_PART) == 0)
 			totchild = 0;
 
 		segments = 1 << pset->draw_step;
@@ -2074,14 +2099,14 @@ static bool psys_thread_context_init_path(ParticleThreadContext *ctx, ParticleSi
 	if (totchild && part->childtype == PART_CHILD_FACES) {
 		totparent = (int)(totchild * part->parents * 0.3f);
 		
-		if ((psys->renderdata || G.is_rendering) && part->child_nbr && part->ren_child_nbr)
+		if ((psys->renderdata || use_render_params) && part->child_nbr && part->ren_child_nbr)
 			totparent *= (float)part->child_nbr / (float)part->ren_child_nbr;
 
 		/* part->parents could still be 0 so we can't test with totparent */
 		between = 1;
 	}
 
-	if (psys->renderdata || G.is_rendering)
+	if (psys->renderdata || use_render_params)
 		segments = 1 << part->ren_step;
 	else {
 		totchild = (int)((float)totchild * (float)part->disp / 100.0f);
@@ -2204,20 +2229,22 @@ static void psys_thread_create_path(ParticleTask *task, struct ChildParticle *cp
 
 		/* modify weights to create parting */
 		if (p_fac > 0.f) {
+			const ParticleCacheKey *key_0_last = pcache_key_segment_endpoint_safe(key[0]);
 			for (w = 0; w < 4; w++) {
-				if (w && weight[w] > 0.f) {
+				if (w && (weight[w] > 0.f)) {
+					const ParticleCacheKey *key_w_last = pcache_key_segment_endpoint_safe(key[w]);
 					float d;
 					if (part->flag & PART_CHILD_LONG_HAIR) {
 						/* For long hair use tip distance/root distance as parting factor instead of root to tip angle. */
 						float d1 = len_v3v3(key[0]->co, key[w]->co);
-						float d2 = len_v3v3((key[0] + key[0]->segments - 1)->co, (key[w] + key[w]->segments - 1)->co);
+						float d2 = len_v3v3(key_0_last->co, key_w_last->co);
 
 						d = d1 > 0.f ? d2 / d1 - 1.f : 10000.f;
 					}
 					else {
 						float v1[3], v2[3];
-						sub_v3_v3v3(v1, (key[0] + key[0]->segments - 1)->co, key[0]->co);
-						sub_v3_v3v3(v2, (key[w] + key[w]->segments - 1)->co, key[w]->co);
+						sub_v3_v3v3(v1, key_0_last->co, key[0]->co);
+						sub_v3_v3v3(v2, key_w_last->co, key[w]->co);
 						normalize_v3(v1);
 						normalize_v3(v2);
 
@@ -2416,7 +2443,9 @@ static void exec_child_path_cache(TaskPool * __restrict UNUSED(pool), void *task
 	}
 }
 
-void psys_cache_child_paths(ParticleSimulationData *sim, float cfra, int editupdate)
+void psys_cache_child_paths(
+        ParticleSimulationData *sim, float cfra,
+        const bool editupdate, const bool use_render_params)
 {
 	TaskScheduler *task_scheduler;
 	TaskPool *task_pool;
@@ -2429,7 +2458,7 @@ void psys_cache_child_paths(ParticleSimulationData *sim, float cfra, int editupd
 		return;
 	
 	/* create a task pool for child path tasks */
-	if (!psys_thread_context_init_path(&ctx, sim, sim->scene, cfra, editupdate))
+	if (!psys_thread_context_init_path(&ctx, sim, sim->scene, cfra, editupdate, use_render_params))
 		return;
 	
 	task_scheduler = BLI_task_scheduler_get();
@@ -2521,7 +2550,7 @@ static void cache_key_incremental_rotation(ParticleCacheKey *key0, ParticleCache
  * - Useful for making use of opengl vertex arrays for super fast strand drawing.
  * - Makes child strands possible and creates them too into the cache.
  * - Cached path data is also used to determine cut position for the editmode tool. */
-void psys_cache_paths(ParticleSimulationData *sim, float cfra)
+void psys_cache_paths(ParticleSimulationData *sim, float cfra, const bool use_render_params)
 {
 	PARTICLE_PSMD;
 	ParticleEditSettings *pset = &sim->scene->toolsettings->particle;
@@ -2545,7 +2574,7 @@ void psys_cache_paths(ParticleSimulationData *sim, float cfra)
 	float prev_tangent[3] = {0.0f, 0.0f, 0.0f}, hairmat[4][4];
 	float rotmat[3][3];
 	int k;
-	int segments = (int)pow(2.0, (double)((psys->renderdata || G.is_rendering) ? part->ren_step : part->draw_step));
+	int segments = (int)pow(2.0, (double)((psys->renderdata || use_render_params) ? part->ren_step : part->draw_step));
 	int totpart = psys->totpart;
 	float length, vec[3];
 	float *vg_effector = NULL;
@@ -2682,7 +2711,7 @@ void psys_cache_paths(ParticleSimulationData *sim, float cfra)
 			/* lattices have to be calculated separately to avoid mixups between effector calculations */
 			if (psys->lattice_deform_data) {
 				for (k = 0, ca = cache[p]; k <= segments; k++, ca++)
-					calc_latt_deform(psys->lattice_deform_data, ca->co, 1.0f);
+					calc_latt_deform(psys->lattice_deform_data, ca->co, psys->lattice_strength);
 			}
 		}
 
@@ -2724,7 +2753,7 @@ void psys_cache_paths(ParticleSimulationData *sim, float cfra)
 	if (vg_length)
 		MEM_freeN(vg_length);
 }
-void psys_cache_edit_paths(Scene *scene, Object *ob, PTCacheEdit *edit, float cfra)
+void psys_cache_edit_paths(Scene *scene, Object *ob, PTCacheEdit *edit, float cfra, const bool use_render_params)
 {
 	ParticleCacheKey *ca, **cache = edit->pathcache;
 	ParticleEditSettings *pset = &scene->toolsettings->particle;
@@ -2920,7 +2949,7 @@ void psys_cache_edit_paths(Scene *scene, Object *ob, PTCacheEdit *edit, float cf
 		sim.psys = psys;
 		sim.psmd = psys_get_modifier(ob, psys);
 
-		psys_cache_child_paths(&sim, cfra, 1);
+		psys_cache_child_paths(&sim, cfra, true, use_render_params);
 	}
 
 	/* clear recalc flag if set here */
@@ -3165,6 +3194,9 @@ void object_remove_particle_system(Scene *UNUSED(scene), Object *ob)
 
 	/* clear particle system */
 	BLI_remlink(&ob->particlesystem, psys);
+	if (psys->part) {
+		id_us_min(&psys->part->id);
+	}
 	psys_free(ob, psys);
 
 	if (ob->particlesystem.first)
@@ -3299,12 +3331,13 @@ void BKE_particlesettings_rough_curve_init(ParticleSettings *part)
 	part->roughcurve = cumap;
 }
 
-ParticleSettings *BKE_particlesettings_copy(ParticleSettings *part)
+ParticleSettings *BKE_particlesettings_copy(Main *bmain, const ParticleSettings *part)
 {
 	ParticleSettings *partn;
 	int a;
 
-	partn = BKE_libblock_copy(&part->id);
+	partn = BKE_libblock_copy(bmain, &part->id);
+
 	partn->pd = MEM_dupallocN(part->pd);
 	partn->pd2 = MEM_dupallocN(part->pd2);
 	partn->effector_weights = MEM_dupallocN(part->effector_weights);
@@ -3327,82 +3360,22 @@ ParticleSettings *BKE_particlesettings_copy(ParticleSettings *part)
 
 	BLI_duplicatelist(&partn->dupliweights, &part->dupliweights);
 	
-	if (part->id.lib) {
-		BKE_id_lib_local_paths(G.main, part->id.lib, &partn->id);
-	}
+	BKE_id_copy_ensure_local(bmain, &part->id, &partn->id);
 
 	return partn;
 }
 
-static void expand_local_particlesettings(ParticleSettings *part)
+void BKE_particlesettings_make_local(Main *bmain, ParticleSettings *part, const bool lib_local)
 {
-	int i;
-	id_lib_extern((ID *)part->dup_group);
-
-	for (i = 0; i < MAX_MTEX; i++) {
-		if (part->mtex[i]) id_lib_extern((ID *)part->mtex[i]->tex);
-	}
-}
-
-void BKE_particlesettings_make_local(ParticleSettings *part)
-{
-	Main *bmain = G.main;
-	Object *ob;
-	bool is_local = false, is_lib = false;
-
-	/* - only lib users: do nothing
-	 * - only local users: set flag
-	 * - mixed: make copy
-	 */
-	
-	if (part->id.lib == 0) return;
-	if (part->id.us == 1) {
-		id_clear_lib_data(bmain, &part->id);
-		expand_local_particlesettings(part);
-		return;
-	}
-
-	/* test objects */
-	for (ob = bmain->object.first; ob && ELEM(false, is_lib, is_local); ob = ob->id.next) {
-		ParticleSystem *psys = ob->particlesystem.first;
-		for (; psys; psys = psys->next) {
-			if (psys->part == part) {
-				if (ob->id.lib) is_lib = true;
-				else is_local = true;
-			}
-		}
-	}
-	
-	if (is_local && is_lib == false) {
-		id_clear_lib_data(bmain, &part->id);
-		expand_local_particlesettings(part);
-	}
-	else if (is_local && is_lib) {
-		ParticleSettings *part_new = BKE_particlesettings_copy(part);
-		part_new->id.us = 0;
-
-		/* Remap paths of new ID using old library as base. */
-		BKE_id_lib_local_paths(bmain, part->id.lib, &part_new->id);
-
-		/* do objects */
-		for (ob = bmain->object.first; ob; ob = ob->id.next) {
-			ParticleSystem *psys;
-			for (psys = ob->particlesystem.first; psys; psys = psys->next) {
-				if (psys->part == part && ob->id.lib == 0) {
-					psys->part = part_new;
-					id_us_plus(&part_new->id);
-					id_us_min(&part->id);
-				}
-			}
-		}
-	}
+	BKE_id_make_local_generic(bmain, &part->id, true, lib_local);
 }
 
 /************************************************/
 /*			Textures							*/
 /************************************************/
 
-static int get_particle_uv(DerivedMesh *dm, ParticleData *pa, int face_index, const float fuv[4], char *name, float *texco)
+static int get_particle_uv(DerivedMesh *dm, ParticleData *pa, int index, const float fuv[4],
+                           char *name, float *texco, bool from_vert)
 {
 	MFace *mf;
 	MTFace *tf;
@@ -3418,11 +3391,15 @@ static int get_particle_uv(DerivedMesh *dm, ParticleData *pa, int face_index, co
 
 	if (pa) {
 		i = ELEM(pa->num_dmcache, DMCACHE_NOTFOUND, DMCACHE_ISCHILD) ? pa->num : pa->num_dmcache;
-		if (i >= dm->getNumTessFaces(dm))
+		if ((!from_vert && i >= dm->getNumTessFaces(dm)) ||
+		    (from_vert && i >= dm->getNumVerts(dm)))
+		{
 			i = -1;
+		}
 	}
-	else
-		i = face_index;
+	else {
+		i = index;
+	}
 
 	if (i == -1) {
 		texco[0] = 0.0f;
@@ -3430,7 +3407,22 @@ static int get_particle_uv(DerivedMesh *dm, ParticleData *pa, int face_index, co
 		texco[2] = 0.0f;
 	}
 	else {
-		mf = dm->getTessFaceData(dm, i, CD_MFACE);
+		if (from_vert) {
+			mf = dm->getTessFaceDataArray(dm, CD_MFACE);
+
+			/* This finds the first face to contain the emitting vertex,
+			 * this is not ideal, but is mostly fine as UV seams generally
+			 * map to equal-colored parts of a texture */
+			for (int j = 0; j < dm->getNumTessFaces(dm); j++, mf++) {
+				if (ELEM(i, mf->v1, mf->v2, mf->v3, mf->v4)) {
+					i = j;
+					break;
+				}
+			}
+		}
+		else {
+			mf = dm->getTessFaceData(dm, i, CD_MFACE);
+		}
 
 		psys_interpolate_uvs(&tf[i], mf->v4, fuv, texco);
 
@@ -3497,9 +3489,13 @@ static void get_cpa_texture(DerivedMesh *dm, ParticleSystem *psys, ParticleSetti
 						mul_m4_v3(mtex->object->imat, texvec);
 					break;
 				case TEXCO_UV:
-					if (fw && get_particle_uv(dm, NULL, face_index, fw, mtex->uvname, texvec))
+					if (fw && get_particle_uv(dm, NULL, face_index, fw, mtex->uvname,
+					                          texvec, (part->from == PART_FROM_VERT)))
+					{
 						break;
-				/* no break, failed to get uv's, so let's try orco's */
+					}
+					/* no break, failed to get uv's, so let's try orco's */
+					ATTR_FALLTHROUGH;
 				case TEXCO_ORCO:
 					copy_v3_v3(texvec, orco);
 					break;
@@ -3511,7 +3507,7 @@ static void get_cpa_texture(DerivedMesh *dm, ParticleSystem *psys, ParticleSetti
 					break;
 			}
 
-			externtex(mtex, texvec, &value, rgba, rgba + 1, rgba + 2, rgba + 3, 0, NULL, false);
+			externtex(mtex, texvec, &value, rgba, rgba + 1, rgba + 2, rgba + 3, 0, NULL, false, false);
 
 			if ((event & mtex->mapto) & PAMAP_ROUGH)
 				ptex->rough1 = ptex->rough2 = ptex->roughe = texture_value_blend(def, ptex->rough1, value, mtex->roughfac, blend);
@@ -3569,9 +3565,13 @@ void psys_get_texture(ParticleSimulationData *sim, ParticleData *pa, ParticleTex
 						mul_m4_v3(mtex->object->imat, texvec);
 					break;
 				case TEXCO_UV:
-					if (get_particle_uv(sim->psmd->dm_final, pa, 0, pa->fuv, mtex->uvname, texvec))
+					if (get_particle_uv(sim->psmd->dm_final, pa, 0, pa->fuv, mtex->uvname,
+					                    texvec, (part->from == PART_FROM_VERT)))
+					{
 						break;
-				/* no break, failed to get uv's, so let's try orco's */
+					}
+					/* no break, failed to get uv's, so let's try orco's */
+					ATTR_FALLTHROUGH;
 				case TEXCO_ORCO:
 					psys_particle_on_emitter(sim->psmd, sim->psys->part->from, pa->num, pa->num_dmcache, pa->fuv, pa->foffset, co, 0, 0, 0, texvec, 0);
 					
@@ -3594,7 +3594,7 @@ void psys_get_texture(ParticleSimulationData *sim, ParticleData *pa, ParticleTex
 					break;
 			}
 
-			externtex(mtex, texvec, &value, rgba, rgba + 1, rgba + 2, rgba + 3, 0, NULL, false);
+			externtex(mtex, texvec, &value, rgba, rgba + 1, rgba + 2, rgba + 3, 0, NULL, false, false);
 
 			if ((event & mtex->mapto) & PAMAP_TIME) {
 				/* the first time has to set the base value for time regardless of blend mode */
@@ -3779,7 +3779,7 @@ void psys_get_particle_on_path(ParticleSimulationData *sim, int p, ParticleKey *
 					}
 
 					if (psys->lattice_deform_data && edit == 0)
-						calc_latt_deform(psys->lattice_deform_data, state->co, 1.0f);
+						calc_latt_deform(psys->lattice_deform_data, state->co, psys->lattice_strength);
 				}
 			}
 		}
@@ -4018,7 +4018,7 @@ int psys_get_particle_state(ParticleSimulationData *sim, int p, ParticleKey *sta
 			do_child_modifiers(NULL, sim, NULL, key1->co, key1->vel, key1->rot, par_orco, cpa, cpa->fuv, mat, state, t);
 
 			if (psys->lattice_deform_data)
-				calc_latt_deform(psys->lattice_deform_data, state->co, 1.0f);
+				calc_latt_deform(psys->lattice_deform_data, state->co, psys->lattice_strength);
 		}
 		else {
 			if (pa->state.time == cfra || ELEM(part->phystype, PART_PHYS_NO, PART_PHYS_KEYED))
@@ -4077,7 +4077,7 @@ int psys_get_particle_state(ParticleSimulationData *sim, int p, ParticleKey *sta
 			}
 
 			if (sim->psys->lattice_deform_data)
-				calc_latt_deform(sim->psys->lattice_deform_data, state->co, 1.0f);
+				calc_latt_deform(sim->psys->lattice_deform_data, state->co, psys->lattice_strength);
 		}
 		
 		return 1;
@@ -4103,13 +4103,16 @@ void psys_get_dupli_texture(ParticleSystem *psys, ParticleSettings *part,
 
 	uv[0] = uv[1] = 0.f;
 
+	/* Grid distribution doesn't support UV or emit from vertex mode */
+	bool is_grid = (part->distr == PART_DISTR_GRID && part->from != PART_FROM_VERT);
+
 	if (cpa) {
 		if ((part->childtype == PART_CHILD_FACES) && (psmd->dm_final != NULL)) {
 			CustomData *mtf_data = psmd->dm_final->getTessFaceDataLayout(psmd->dm_final);
 			const int uv_idx = CustomData_get_render_layer(mtf_data, CD_MTFACE);
 			mtface = CustomData_get_layer_n(mtf_data, CD_MTFACE, uv_idx);
 
-			if (mtface) {
+			if (mtface && !is_grid) {
 				mface = psmd->dm_final->getTessFaceData(psmd->dm_final, cpa->num, CD_MFACE);
 				mtface += cpa->num;
 				psys_interpolate_uvs(mtface, mface->v4, cpa->fuv, uv);
@@ -4123,7 +4126,7 @@ void psys_get_dupli_texture(ParticleSystem *psys, ParticleSettings *part,
 		}
 	}
 
-	if ((part->from == PART_FROM_FACE) && (psmd->dm_final != NULL)) {
+	if ((part->from == PART_FROM_FACE) && (psmd->dm_final != NULL) && !is_grid) {
 		CustomData *mtf_data = psmd->dm_final->getTessFaceDataLayout(psmd->dm_final);
 		const int uv_idx = CustomData_get_render_layer(mtf_data, CD_MTFACE);
 		mtface = CustomData_get_layer_n(mtf_data, CD_MTFACE, uv_idx);
@@ -4224,8 +4227,8 @@ void psys_make_billboard(ParticleBillboardData *bb, float xvec[3], float yvec[3]
 	/* can happen with bad pointcache or physics calculation
 	 * since this becomes geometry, nan's and inf's crash raytrace code.
 	 * better not allow this. */
-	if ((!finite(bb->vec[0])) || (!finite(bb->vec[1])) || (!finite(bb->vec[2])) ||
-	    (!finite(bb->vel[0])) || (!finite(bb->vel[1])) || (!finite(bb->vel[2])) )
+	if ((!isfinite(bb->vec[0])) || (!isfinite(bb->vec[1])) || (!isfinite(bb->vec[2])) ||
+	    (!isfinite(bb->vel[0])) || (!isfinite(bb->vel[1])) || (!isfinite(bb->vel[2])) )
 	{
 		zero_v3(bb->vec);
 		zero_v3(bb->vel);
@@ -4321,7 +4324,7 @@ void psys_apply_hair_lattice(Scene *scene, Object *ob, ParticleSystem *psys)
 			hkey = pa->hair;
 			for (h = 0; h < pa->totkey; h++, hkey++) {
 				mul_m4_v3(hairmat, hkey->co);
-				calc_latt_deform(psys->lattice_deform_data, hkey->co, 1.0f);
+				calc_latt_deform(psys->lattice_deform_data, hkey->co, psys->lattice_strength);
 				mul_m4_v3(imat, hkey->co);
 			}
 		}

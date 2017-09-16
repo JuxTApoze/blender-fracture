@@ -53,8 +53,6 @@
 #include "BKE_mesh.h"
 #include "BKE_pbvh.h"
 
-#include "DNA_userdef_types.h"
-
 #include "GPU_buffers.h"
 #include "GPU_draw.h"
 #include "GPU_basic_shader.h"
@@ -78,7 +76,7 @@ typedef struct {
 
 static size_t gpu_buffer_size_from_type(DerivedMesh *dm, GPUBufferType type);
 
-const GPUBufferTypeSettings gpu_buffer_type_settings[] = {
+static const GPUBufferTypeSettings gpu_buffer_type_settings[] = {
     /* vertex */
     {GL_ARRAY_BUFFER, 3},
     /* normal */
@@ -107,10 +105,12 @@ static GPUAttrib attribData[MAX_GPU_ATTRIB_DATA] = { { -1, 0, 0 } };
 static ThreadMutex buffer_mutex = BLI_MUTEX_INITIALIZER;
 
 /* multires global buffer, can be used for many grids having the same grid size */
-static GPUBuffer *mres_glob_buffer = NULL;
-static int mres_prev_gridsize = -1;
-static GLenum mres_prev_index_type = 0;
-static unsigned mres_prev_totquad = 0;
+typedef struct GridCommonGPUBuffer {
+	GPUBuffer *mres_buffer;
+	int mres_prev_gridsize;
+	GLenum mres_prev_index_type;
+	unsigned mres_prev_totquad;
+} GridCommonGPUBuffer;
 
 void GPU_buffer_material_finalize(GPUDrawObject *gdo, GPUBufferMaterial *matinfo, int totmat)
 {
@@ -406,33 +406,6 @@ void GPU_buffer_free(GPUBuffer *buffer)
 	gpu_buffer_free_intern(buffer);
 	BLI_mutex_unlock(&buffer_mutex);
 }
-
-void GPU_buffer_multires_free(bool force)
-{
-	if (!mres_glob_buffer) {
-		/* Early output, no need to lock in this case, */
-		return;
-	}
-
-	if (force && BLI_thread_is_main()) {
-		if (mres_glob_buffer) {
-			if (mres_glob_buffer->id)
-				glDeleteBuffers(1, &mres_glob_buffer->id);
-			MEM_freeN(mres_glob_buffer);
-		}
-	}
-	else {
-		BLI_mutex_lock(&buffer_mutex);
-		gpu_buffer_free_intern(mres_glob_buffer);
-		BLI_mutex_unlock(&buffer_mutex);
-	}
-
-	mres_glob_buffer = NULL;
-	mres_prev_gridsize = -1;
-	mres_prev_index_type = 0;
-	mres_prev_totquad = 0;
-}
-
 
 void GPU_drawobject_free(DerivedMesh *dm)
 {
@@ -770,7 +743,7 @@ void GPU_triangle_setup(struct DerivedMesh *dm)
 	GLStates |= GPU_BUFFER_ELEMENT_STATE;
 }
 
-static int GPU_typesize(int type)
+static int gpu_typesize(int type)
 {
 	switch (type) {
 		case GL_FLOAT:
@@ -793,7 +766,7 @@ int GPU_attrib_element_size(GPUAttrib data[], int numdata)
 	int i, elementsize = 0;
 
 	for (i = 0; i < numdata; i++) {
-		int typesize = GPU_typesize(data[i].type);
+		int typesize = gpu_typesize(data[i].type);
 		if (typesize != 0)
 			elementsize += typesize * data[i].size;
 	}
@@ -822,9 +795,15 @@ void GPU_interleaved_attrib_setup(GPUBuffer *buffer, GPUAttrib data[], int numda
 	
 	for (i = 0; i < numdata; i++) {
 		glEnableVertexAttribArray(data[i].index);
+		int info = 0;
+		if (data[i].type == GL_UNSIGNED_BYTE) {
+			info |= GPU_ATTR_INFO_SRGB;
+		}
+		glUniform1i(data[i].info_index, info);
+
 		glVertexAttribPointer(data[i].index, data[i].size, data[i].type,
-		                         GL_FALSE, elementsize, BUFFER_OFFSET(offset));
-		offset += data[i].size * GPU_typesize(data[i].type);
+		                         GL_TRUE, elementsize, BUFFER_OFFSET(offset));
+		offset += data[i].size * gpu_typesize(data[i].type);
 		
 		attribData[i].index = data[i].index;
 		attribData[i].size = data[i].size;
@@ -937,7 +916,7 @@ void GPU_buffer_unlock(GPUBuffer *UNUSED(buffer), GPUBindingType binding)
 {
 	int bindtypegl = gpu_binding_type_gl[binding];
 	/* note: this operation can fail, could return
-		 * an error code from this function? */
+	 * an error code from this function? */
 	glUnmapBuffer(bindtypegl);
 	glBindBuffer(bindtypegl, 0);
 }
@@ -1003,6 +982,7 @@ struct GPU_PBVH_Buffers {
 	const int *grid_indices;
 	int totgrid;
 	bool has_hidden;
+	bool is_index_buf_global;  /* Means index_buf uses global bvh's grid_common_gpu_buffer, **DO NOT** free it! */
 
 	bool use_bmesh;
 
@@ -1050,13 +1030,13 @@ static void gpu_color_from_mask_quad_copy(const CCGKey *key,
 	out[2] = diffuse_color[2] * mask_color;
 }
 
-void GPU_update_mesh_pbvh_buffers(
+void GPU_pbvh_mesh_buffers_update(
         GPU_PBVH_Buffers *buffers, const MVert *mvert,
         const int *vert_indices, int totvert, const float *vmask,
-        const int (*face_vert_indices)[4], bool show_diffuse_color)
+        const int (*face_vert_indices)[3], bool show_diffuse_color)
 {
 	VertexBufferFormat *vert_data;
-	int i, j;
+	int i;
 
 	buffers->vmask = vmask;
 	buffers->show_diffuse_color = show_diffuse_color;
@@ -1077,6 +1057,9 @@ void GPU_update_mesh_pbvh_buffers(
 
 		copy_v4_v4(buffers->diffuse_color, diffuse_color);
 
+		uchar diffuse_color_ub[4];
+		rgba_float_to_uchar(diffuse_color_ub, diffuse_color);
+
 		/* Build VBO */
 		if (buffers->vert_buf)
 			GPU_buffer_free(buffers->vert_buf);
@@ -1096,28 +1079,20 @@ void GPU_update_mesh_pbvh_buffers(
 					memcpy(out->no, v->no, sizeof(short) * 3);
 				}
 
-#define UPDATE_VERTEX(face, vertex, index, diffuse_color) \
-				{ \
-					VertexBufferFormat *out = vert_data + face_vert_indices[face][index]; \
-					if (vmask) \
-						gpu_color_from_mask_copy(vmask[vertex], diffuse_color, out->color); \
-					else \
-						rgb_float_to_uchar(out->color, diffuse_color); \
-				} (void)0
-
 				for (i = 0; i < buffers->face_indices_len; i++) {
 					const MLoopTri *lt = &buffers->looptri[buffers->face_indices[i]];
-					const unsigned int vtri[3] = {
-					    buffers->mloop[lt->tri[0]].v,
-					    buffers->mloop[lt->tri[1]].v,
-					    buffers->mloop[lt->tri[2]].v,
-					};
+					for (uint j = 0; j < 3; j++) {
+						VertexBufferFormat *out = vert_data + face_vert_indices[i][j];
 
-					UPDATE_VERTEX(i, vtri[0], 0, diffuse_color);
-					UPDATE_VERTEX(i, vtri[1], 1, diffuse_color);
-					UPDATE_VERTEX(i, vtri[2], 2, diffuse_color);
+						if (vmask) {
+							uint v_index = buffers->mloop[lt->tri[j]].v;
+							gpu_color_from_mask_copy(vmask[v_index], diffuse_color, out->color);
+						}
+						else {
+							copy_v3_v3_uchar(out->color, diffuse_color_ub);
+						}
+					}
 				}
-#undef UPDATE_VERTEX
 			}
 			else {
 				/* calculate normal for each polygon only once */
@@ -1132,8 +1107,6 @@ void GPU_update_mesh_pbvh_buffers(
 					    buffers->mloop[lt->tri[2]].v,
 					};
 
-					float fmask;
-
 					if (paint_is_face_hidden(lt, mvert, buffers->mloop))
 						continue;
 
@@ -1146,23 +1119,22 @@ void GPU_update_mesh_pbvh_buffers(
 						mpoly_prev = lt->poly;
 					}
 
+					uchar color_ub[3];
 					if (vmask) {
-						fmask = (vmask[vtri[0]] +
-						         vmask[vtri[1]] +
-						         vmask[vtri[2]]) / 3.0f;
+						float fmask = (vmask[vtri[0]] + vmask[vtri[1]] + vmask[vtri[2]]) / 3.0f;
+						gpu_color_from_mask_copy(fmask, diffuse_color, color_ub);
+					}
+					else {
+						copy_v3_v3_uchar(color_ub, diffuse_color_ub);
 					}
 
-					for (j = 0; j < 3; j++) {
+					for (uint j = 0; j < 3; j++) {
 						const MVert *v = &mvert[vtri[j]];
 						VertexBufferFormat *out = vert_data;
 
 						copy_v3_v3(out->co, v->co);
 						copy_v3_v3_short(out->no, no);
-
-						if (vmask)
-							gpu_color_from_mask_copy(fmask, diffuse_color, out->color);
-						else
-							rgb_float_to_uchar(out->color, diffuse_color);
+						copy_v3_v3_uchar(out->color, color_ub);
 
 						vert_data++;
 					}
@@ -1180,8 +1152,8 @@ void GPU_update_mesh_pbvh_buffers(
 	buffers->mvert = mvert;
 }
 
-GPU_PBVH_Buffers *GPU_build_mesh_pbvh_buffers(
-        const int (*face_vert_indices)[4],
+GPU_PBVH_Buffers *GPU_pbvh_mesh_buffers_build(
+        const int (*face_vert_indices)[3],
         const MPoly *mpoly, const MLoop *mloop, const MLoopTri *looptri,
         const MVert *mvert,
         const int *face_indices,
@@ -1220,8 +1192,10 @@ GPU_PBVH_Buffers *GPU_build_mesh_pbvh_buffers(
 	/* An element index buffer is used for smooth shading, but flat
 	 * shading requires separate vertex normals so an index buffer is
 	 * can't be used there. */
-	if (buffers->smooth)
+	if (buffers->smooth) {
 		buffers->index_buf = GPU_buffer_alloc(sizeof(unsigned short) * tottri * 3);
+		buffers->is_index_buf_global = false;
+	}
 
 	if (buffers->index_buf) {
 		/* Fill the triangle buffer */
@@ -1242,8 +1216,11 @@ GPU_PBVH_Buffers *GPU_build_mesh_pbvh_buffers(
 			GPU_buffer_unlock(buffers->index_buf, GPU_BINDING_INDEX);
 		}
 		else {
-			GPU_buffer_free(buffers->index_buf);
+			if (!buffers->is_index_buf_global) {
+				GPU_buffer_free(buffers->index_buf);
+			}
 			buffers->index_buf = NULL;
+			buffers->is_index_buf_global = false;
 		}
 	}
 
@@ -1259,9 +1236,10 @@ GPU_PBVH_Buffers *GPU_build_mesh_pbvh_buffers(
 	return buffers;
 }
 
-void GPU_update_grid_pbvh_buffers(GPU_PBVH_Buffers *buffers, CCGElem **grids,
-                                  const DMFlagMat *grid_flag_mats, int *grid_indices,
-                                  int totgrid, const CCGKey *key, bool show_diffuse_color)
+void GPU_pbvh_grid_buffers_update(
+        GPU_PBVH_Buffers *buffers, CCGElem **grids,
+        const DMFlagMat *grid_flag_mats, int *grid_indices,
+        int totgrid, const CCGKey *key, bool show_diffuse_color)
 {
 	VertexBufferFormat *vert_data;
 	int i, j, k, x, y;
@@ -1410,22 +1388,33 @@ void GPU_update_grid_pbvh_buffers(GPU_PBVH_Buffers *buffers, CCGElem **grids,
     } (void)0
 /* end FILL_QUAD_BUFFER */
 
-static GPUBuffer *gpu_get_grid_buffer(int gridsize, GLenum *index_type, unsigned *totquad)
+static GPUBuffer *gpu_get_grid_buffer(
+        int gridsize, GLenum *index_type, unsigned *totquad, GridCommonGPUBuffer **grid_common_gpu_buffer)
 {
 	/* used in the FILL_QUAD_BUFFER macro */
 	BLI_bitmap * const *grid_hidden = NULL;
 	const int *grid_indices = NULL;
 	int totgrid = 1;
 
+	GridCommonGPUBuffer *gridbuff = *grid_common_gpu_buffer;
+
+	if (gridbuff == NULL) {
+		*grid_common_gpu_buffer = gridbuff = MEM_mallocN(sizeof(GridCommonGPUBuffer), __func__);
+		gridbuff->mres_buffer = NULL;
+		gridbuff->mres_prev_gridsize = -1;
+		gridbuff->mres_prev_index_type = 0;
+		gridbuff->mres_prev_totquad = 0;
+	}
+
 	/* VBO is already built */
-	if (mres_glob_buffer && mres_prev_gridsize == gridsize) {
-		*index_type = mres_prev_index_type;
-		*totquad = mres_prev_totquad;
-		return mres_glob_buffer;
+	if (gridbuff->mres_buffer && gridbuff->mres_prev_gridsize == gridsize) {
+		*index_type = gridbuff->mres_prev_index_type;
+		*totquad = gridbuff->mres_prev_totquad;
+		return gridbuff->mres_buffer;
 	}
 	/* we can't reuse old, delete the existing buffer */
-	else if (mres_glob_buffer) {
-		GPU_buffer_free(mres_glob_buffer);
+	else if (gridbuff->mres_buffer) {
+		GPU_buffer_free(gridbuff->mres_buffer);
 	}
 
 	/* Build new VBO */
@@ -1433,17 +1422,17 @@ static GPUBuffer *gpu_get_grid_buffer(int gridsize, GLenum *index_type, unsigned
 
 	if (gridsize * gridsize < USHRT_MAX) {
 		*index_type = GL_UNSIGNED_SHORT;
-		FILL_QUAD_BUFFER(unsigned short, *totquad, mres_glob_buffer);
+		FILL_QUAD_BUFFER(unsigned short, *totquad, gridbuff->mres_buffer);
 	}
 	else {
 		*index_type = GL_UNSIGNED_INT;
-		FILL_QUAD_BUFFER(unsigned int, *totquad, mres_glob_buffer);
+		FILL_QUAD_BUFFER(unsigned int, *totquad, gridbuff->mres_buffer);
 	}
 
-	mres_prev_gridsize = gridsize;
-	mres_prev_index_type = *index_type;
-	mres_prev_totquad = *totquad;
-	return mres_glob_buffer;
+	gridbuff->mres_prev_gridsize = gridsize;
+	gridbuff->mres_prev_index_type = *index_type;
+	gridbuff->mres_prev_totquad = *totquad;
+	return gridbuff->mres_buffer;
 }
 
 #define FILL_FAST_BUFFER(type_) \
@@ -1470,8 +1459,9 @@ static GPUBuffer *gpu_get_grid_buffer(int gridsize, GLenum *index_type, unsigned
 	} \
 } (void)0
 
-GPU_PBVH_Buffers *GPU_build_grid_pbvh_buffers(int *grid_indices, int totgrid,
-                                              BLI_bitmap **grid_hidden, int gridsize, const CCGKey *key)
+GPU_PBVH_Buffers *GPU_pbvh_grid_buffers_build(
+        int *grid_indices, int totgrid, BLI_bitmap **grid_hidden, int gridsize, const CCGKey *key,
+        GridCommonGPUBuffer **grid_common_gpu_buffer)
 {
 	GPU_PBVH_Buffers *buffers;
 	int totquad;
@@ -1500,8 +1490,10 @@ GPU_PBVH_Buffers *GPU_build_grid_pbvh_buffers(int *grid_indices, int totgrid,
 	}
 
 	if (totquad == fully_visible_totquad) {
-		buffers->index_buf = gpu_get_grid_buffer(gridsize, &buffers->index_type, &buffers->tot_quad);
+		buffers->index_buf = gpu_get_grid_buffer(
+		                         gridsize, &buffers->index_type, &buffers->tot_quad, grid_common_gpu_buffer);
 		buffers->has_hidden = false;
+		buffers->is_index_buf_global = true;
 	}
 	else {
 		buffers->tot_quad = totquad;
@@ -1516,6 +1508,7 @@ GPU_PBVH_Buffers *GPU_build_grid_pbvh_buffers(int *grid_indices, int totgrid,
 		}
 
 		buffers->has_hidden = true;
+		buffers->is_index_buf_global = false;
 	}
 
 	/* Build coord/normal VBO */
@@ -1612,12 +1605,13 @@ static int gpu_bmesh_face_visible_count(GSet *bm_faces)
 
 /* Creates a vertex buffer (coordinate, normal, color) and, if smooth
  * shading, an element index buffer. */
-void GPU_update_bmesh_pbvh_buffers(GPU_PBVH_Buffers *buffers,
-                                   BMesh *bm,
-                                   GSet *bm_faces,
-                                   GSet *bm_unique_verts,
-                                   GSet *bm_other_verts,
-                                   bool show_diffuse_color)
+void GPU_pbvh_bmesh_buffers_update(
+        GPU_PBVH_Buffers *buffers,
+        BMesh *bm,
+        GSet *bm_faces,
+        GSet *bm_unique_verts,
+        GSet *bm_other_verts,
+        bool show_diffuse_color)
 {
 	VertexBufferFormat *vert_data;
 	void *tri_data;
@@ -1740,8 +1734,9 @@ void GPU_update_bmesh_pbvh_buffers(GPU_PBVH_Buffers *buffers,
 		const int use_short = (maxvert < USHRT_MAX);
 
 		/* Initialize triangle index buffer */
-		if (buffers->index_buf)
+		if (buffers->index_buf && !buffers->is_index_buf_global)
 			GPU_buffer_free(buffers->index_buf);
+		buffers->is_index_buf_global = false;
 		buffers->index_buf = GPU_buffer_alloc((use_short ?
 		                                      sizeof(unsigned short) :
 		                                      sizeof(unsigned int)) * 3 * tottri);
@@ -1786,16 +1781,23 @@ void GPU_update_bmesh_pbvh_buffers(GPU_PBVH_Buffers *buffers,
 		}
 		else {
 			/* Memory map failed */
-			GPU_buffer_free(buffers->index_buf);
+			if (!buffers->is_index_buf_global) {
+				GPU_buffer_free(buffers->index_buf);
+			}
 			buffers->index_buf = NULL;
+			buffers->is_index_buf_global = false;
 		}
 	}
 	else if (buffers->index_buf) {
-		GPU_buffer_free(buffers->index_buf);
+		if (!buffers->is_index_buf_global) {
+			GPU_buffer_free(buffers->index_buf);
+		}
+		buffers->index_buf = NULL;
+		buffers->is_index_buf_global = false;
 	}
 }
 
-GPU_PBVH_Buffers *GPU_build_bmesh_pbvh_buffers(bool smooth_shading)
+GPU_PBVH_Buffers *GPU_pbvh_bmesh_buffers_build(bool smooth_shading)
 {
 	GPU_PBVH_Buffers *buffers;
 
@@ -1808,8 +1810,9 @@ GPU_PBVH_Buffers *GPU_build_bmesh_pbvh_buffers(bool smooth_shading)
 	return buffers;
 }
 
-void GPU_draw_pbvh_buffers(GPU_PBVH_Buffers *buffers, DMSetMaterial setMaterial,
-                           bool wireframe, bool fast)
+void GPU_pbvh_buffers_draw(
+        GPU_PBVH_Buffers *buffers, DMSetMaterial setMaterial,
+        bool wireframe, bool fast)
 {
 	bool do_fast = fast && buffers->index_buf_fast;
 	/* sets material from the first face, to solve properly face would need to
@@ -1835,15 +1838,15 @@ void GPU_draw_pbvh_buffers(GPU_PBVH_Buffers *buffers, DMSetMaterial setMaterial,
 	if (buffers->vert_buf) {
 		char *base = NULL;
 		char *index_base = NULL;
-		int bound_options = 0;
+		/* weak inspection of bound options, should not be necessary ideally */
+		const int bound_options_old = GPU_basic_shader_bound_options();
+		int bound_options_new = 0;
 		glEnableClientState(GL_VERTEX_ARRAY);
 		if (!wireframe) {
 			glEnableClientState(GL_NORMAL_ARRAY);
 			glEnableClientState(GL_COLOR_ARRAY);
 
-			/* weak inspection of bound options, should not be necessary ideally */
-			bound_options = GPU_basic_shader_bound_options();
-			GPU_basic_shader_bind(bound_options | GPU_SHADER_USE_COLOR);
+			bound_options_new |= GPU_SHADER_USE_COLOR;
 		}
 
 		GPU_buffer_bind(buffers->vert_buf, GPU_BINDING_ARRAY);
@@ -1855,10 +1858,18 @@ void GPU_draw_pbvh_buffers(GPU_PBVH_Buffers *buffers, DMSetMaterial setMaterial,
 			GPU_buffer_bind(buffers->index_buf, GPU_BINDING_INDEX);
 		}
 
-		if (wireframe)
+		if (wireframe) {
 			glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-		else
-			glShadeModel((buffers->smooth || buffers->face_indices_len) ? GL_SMOOTH : GL_FLAT);
+		}
+		else {
+			if ((buffers->smooth == false) && (buffers->face_indices_len == 0)) {
+				bound_options_new |= GPU_SHADER_FLAT_NORMAL;
+			}
+		}
+
+		if (bound_options_new & ~bound_options_old) {
+			GPU_basic_shader_bind(bound_options_old | bound_options_new);
+		}
 
 		if (buffers->tot_quad) {
 			const char *offset = base;
@@ -1932,12 +1943,16 @@ void GPU_draw_pbvh_buffers(GPU_PBVH_Buffers *buffers, DMSetMaterial setMaterial,
 		if (!wireframe) {
 			glDisableClientState(GL_NORMAL_ARRAY);
 			glDisableClientState(GL_COLOR_ARRAY);
-			GPU_basic_shader_bind(bound_options);
+		}
+
+		if (bound_options_new & ~bound_options_old) {
+			GPU_basic_shader_bind(bound_options_old);
 		}
 	}
 }
 
-bool GPU_pbvh_buffers_diffuse_changed(GPU_PBVH_Buffers *buffers, GSet *bm_faces, bool show_diffuse_color)
+bool GPU_pbvh_buffers_diffuse_changed(
+        GPU_PBVH_Buffers *buffers, GSet *bm_faces, bool show_diffuse_color)
 {
 	float diffuse_color[4];
 	bool use_matcaps = GPU_material_use_matcaps_get();
@@ -1980,12 +1995,12 @@ bool GPU_pbvh_buffers_diffuse_changed(GPU_PBVH_Buffers *buffers, GSet *bm_faces,
 	return !equals_v3v3(diffuse_color, buffers->diffuse_color);
 }
 
-void GPU_free_pbvh_buffers(GPU_PBVH_Buffers *buffers)
+void GPU_pbvh_buffers_free(GPU_PBVH_Buffers *buffers)
 {
 	if (buffers) {
 		if (buffers->vert_buf)
 			GPU_buffer_free(buffers->vert_buf);
-		if (buffers->index_buf && (buffers->tot_tri || buffers->has_hidden))
+		if (buffers->index_buf && !buffers->is_index_buf_global)
 			GPU_buffer_free(buffers->index_buf);
 		if (buffers->index_buf_fast)
 			GPU_buffer_free(buffers->index_buf_fast);
@@ -1998,9 +2013,23 @@ void GPU_free_pbvh_buffers(GPU_PBVH_Buffers *buffers)
 	}
 }
 
+void GPU_pbvh_multires_buffers_free(GridCommonGPUBuffer **grid_common_gpu_buffer)
+{
+	GridCommonGPUBuffer *gridbuff = *grid_common_gpu_buffer;
+
+	if (gridbuff) {
+		if (gridbuff->mres_buffer) {
+			BLI_mutex_lock(&buffer_mutex);
+			gpu_buffer_free_intern(gridbuff->mres_buffer);
+			BLI_mutex_unlock(&buffer_mutex);
+		}
+		MEM_freeN(gridbuff);
+		*grid_common_gpu_buffer = NULL;
+	}
+}
 
 /* debug function, draws the pbvh BB */
-void GPU_draw_pbvh_BB(float min[3], float max[3], bool leaf)
+void GPU_pbvh_BB_draw(float min[3], float max[3], bool leaf)
 {
 	const float quads[4][4][3] = {
 		{
@@ -2041,7 +2070,7 @@ void GPU_draw_pbvh_BB(float min[3], float max[3], bool leaf)
 	glDrawArrays(GL_QUADS, 0, 16);
 }
 
-void GPU_init_draw_pbvh_BB(void)
+void GPU_pbvh_BB_draw_init(void)
 {
 	glPushAttrib(GL_ENABLE_BIT);
 	glDisable(GL_CULL_FACE);
@@ -2051,7 +2080,7 @@ void GPU_init_draw_pbvh_BB(void)
 	glEnable(GL_BLEND);
 }
 
-void GPU_end_draw_pbvh_BB(void)
+void GPU_pbvh_BB_draw_end(void)
 {
 	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 	glPopAttrib();

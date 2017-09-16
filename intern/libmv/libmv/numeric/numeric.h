@@ -36,7 +36,7 @@
 #if !defined(__MINGW64__)
 #  if defined(_WIN32) || defined(__APPLE__) || \
       defined(__FreeBSD__) || defined(__NetBSD__)
-static void sincos(double x, double *sinx, double *cosx) {
+inline void sincos(double x, double *sinx, double *cosx) {
   *sinx = sin(x);
   *cosx = cos(x);
 }
@@ -148,7 +148,7 @@ using Eigen::Matrix;
 //   A = U * diag(s) * VT
 //
 template <typename TMat, typename TVec>
-inline void SVD(TMat *A, Vec *s, Mat *U, Mat *VT) {
+inline void SVD(TMat * /*A*/, Vec * /*s*/, Mat * /*U*/, Mat * /*VT*/) {
   assert(0);
 }
 

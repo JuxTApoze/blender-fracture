@@ -225,6 +225,12 @@ void CustomData_bmesh_copy_data(const struct CustomData *source,
                                 struct CustomData *dest, void *src_block, 
                                 void **dest_block);
 
+/* need this function exposed to deal with customdata in Fracture Modifier properly */
+void CustomData_copy_data_layer(
+        const CustomData *source, CustomData *dest,
+        int src_i, int dst_i,
+        int src_index, int dst_index, int count);
+
 /* frees data in a CustomData object
  * return 1 on success, 0 on failure
  */
@@ -244,7 +250,7 @@ void CustomData_free_elem(struct CustomData *data, int index, int count);
  */
 void CustomData_interp(
         const struct CustomData *source, struct CustomData *dest,
-        int *src_indices, float *weights, float *sub_weights,
+        const int *src_indices, const float *weights, const float *sub_weights,
         int count, int dest_index);
 void CustomData_bmesh_interp_n(
         struct CustomData *data, const void **src_blocks, const float *weights,
@@ -258,7 +264,9 @@ void CustomData_bmesh_interp(
 /* swaps the data in the element corners, to new corners with indices as
  * specified in corner_indices. for edges this is an array of length 2, for
  * faces an array of length 4 */
-void CustomData_swap(struct CustomData *data, int index, const int *corner_indices);
+void CustomData_swap_corners(struct CustomData *data, int index, const int *corner_indices);
+
+void CustomData_swap(struct CustomData *data, const int index_a, const int index_b);
 
 /* gets a pointer to the data element at index from the first layer of type
  * returns NULL if there is no layer of type
@@ -357,7 +365,7 @@ void CustomData_file_write_prepare(
         struct CustomDataLayer **r_write_layers, struct CustomDataLayer *write_layers_buff, size_t write_layers_size);
 
 /* query info over types */
-void CustomData_file_write_info(int type, const char **structname, int *structnum);
+void CustomData_file_write_info(int type, const char **r_struct_name, int *r_struct_num);
 int CustomData_sizeof(int type);
 
 /* get the name of a layer type */

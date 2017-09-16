@@ -32,6 +32,7 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "DNA_gpencil_types.h"
 #include "DNA_scene_types.h"
 #include "DNA_mask_types.h"
 
@@ -41,6 +42,7 @@
 #include "BLI_utildefines.h"
 
 #include "BKE_context.h"
+#include "BKE_library.h"
 #include "BKE_screen.h"
 #include "BKE_sequencer.h"
 #include "BKE_global.h"
@@ -433,6 +435,7 @@ static void sequencer_dropboxes(void)
 
 /* ************* end drop *********** */
 
+/* DO NOT make this static, this hides the symbol and breaks API generation script. */
 const char *sequencer_context_dir[] = {"edit_mask", NULL};
 
 static int sequencer_context(const bContext *C, const char *member, bContextDataResult *result)
@@ -687,6 +690,22 @@ static void sequencer_buttons_region_listener(bScreen *UNUSED(sc), ScrArea *UNUS
 			break;
 	}
 }
+
+static void sequencer_id_remap(ScrArea *UNUSED(sa), SpaceLink *slink, ID *old_id, ID *new_id)
+{
+	SpaceSeq *sseq = (SpaceSeq *)slink;
+
+	if (!ELEM(GS(old_id->name), ID_GD)) {
+		return;
+	}
+
+	if ((ID *)sseq->gpd == old_id) {
+		sseq->gpd = (bGPdata *)new_id;
+		id_us_min(old_id);
+		id_us_plus(new_id);
+	}
+}
+
 /* ************************************* */
 
 /* only called once, from space/spacetypes.c */
@@ -708,6 +727,7 @@ void ED_spacetype_sequencer(void)
 	st->dropboxes = sequencer_dropboxes;
 	st->refresh = sequencer_refresh;
 	st->listener = sequencer_listener;
+	st->id_remap = sequencer_id_remap;
 
 	/* regions: main window */
 	art = MEM_callocN(sizeof(ARegionType), "spacetype sequencer region");

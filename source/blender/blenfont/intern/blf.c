@@ -96,15 +96,16 @@ static FontBLF *blf_get(int fontid)
 	return NULL;
 }
 
-int BLF_init(int points, int dpi)
+int BLF_init(void)
 {
 	int i;
 
 	for (i = 0; i < BLF_MAX_FONT; i++)
 		global_font[i] = NULL;
 
-	global_font_points = points;
-	global_font_dpi = dpi;
+	global_font_points = 11;
+	global_font_dpi = 72;
+
 	return blf_font_init();
 }
 
@@ -849,16 +850,13 @@ void BLF_wordwrap(int fontid, int wrap_width)
 	}
 }
 
-void BLF_shadow(int fontid, int level, float r, float g, float b, float a)
+void BLF_shadow(int fontid, int level, const float rgba[4])
 {
 	FontBLF *font = blf_get(fontid);
 
 	if (font) {
 		font->shadow = level;
-		font->shadow_col[0] = r;
-		font->shadow_col[1] = g;
-		font->shadow_col[2] = b;
-		font->shadow_col[3] = a;
+		copy_v4_v4(font->shadow_col, rgba);
 	}
 }
 
@@ -886,12 +884,12 @@ void BLF_buffer(int fontid, float *fbuf, unsigned char *cbuf, int w, int h, int 
 	}
 }
 
-void BLF_buffer_col(int fontid, float r, float g, float b, float a)
+void BLF_buffer_col(int fontid, const float rgba[4])
 {
 	FontBLF *font = blf_get(fontid);
 
 	if (font) {
-		ARRAY_SET_ITEMS(font->buf_info.col_init, r, g, b, a);
+		copy_v4_v4(font->buf_info.col_init, rgba);
 	}
 }
 

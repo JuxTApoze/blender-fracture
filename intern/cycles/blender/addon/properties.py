@@ -21,7 +21,8 @@ from bpy.props import (BoolProperty,
                        EnumProperty,
                        FloatProperty,
                        IntProperty,
-                       PointerProperty)
+                       PointerProperty,
+                       StringProperty)
 
 # enums
 
@@ -29,7 +30,7 @@ import _cycles
 
 enum_devices = (
     ('CPU', "CPU", "Use CPU for rendering"),
-    ('GPU', "GPU Compute", "Use GPU compute device for rendering, configured in user preferences"),
+    ('GPU', "GPU Compute", "Use GPU compute device for rendering, configured in the system tab in the user preferences"),
     )
 
 if _cycles.with_network:
@@ -122,6 +123,22 @@ enum_volume_interpolation = (
     ('CUBIC', "Cubic", "Smoothed high quality interpolation, but slower")
     )
 
+enum_device_type = (
+    ('CPU', "CPU", "CPU", 0),
+    ('CUDA', "CUDA", "CUDA", 1),
+    ('OPENCL', "OpenCL", "OpenCL", 2)
+    )
+
+enum_texture_limit = (
+    ('OFF', "No Limit", "No texture size limit", 0),
+    ('128', "128", "Limit texture size to 128 pixels", 1),
+    ('256', "256", "Limit texture size to 256 pixels", 2),
+    ('512', "512", "Limit texture size to 512 pixels", 3),
+    ('1024', "1024", "Limit texture size to 1024 pixels", 4),
+    ('2048', "2048", "Limit texture size to 2048 pixels", 5),
+    ('4096', "4096", "Limit texture size to 4096 pixels", 6),
+    ('8192', "8192", "Limit texture size to 8192 pixels", 7),
+    )
 
 class CyclesRenderSettings(bpy.types.PropertyGroup):
     @classmethod
@@ -187,57 +204,57 @@ class CyclesRenderSettings(bpy.types.PropertyGroup):
         cls.aa_samples = IntProperty(
                 name="AA Samples",
                 description="Number of antialiasing samples to render for each pixel",
-                min=1, max=10000,
+                min=1, max=2097151,
                 default=4,
                 )
         cls.preview_aa_samples = IntProperty(
                 name="AA Samples",
                 description="Number of antialiasing samples to render in the viewport, unlimited if 0",
-                min=0, max=10000,
+                min=0, max=2097151,
                 default=4,
                 )
         cls.diffuse_samples = IntProperty(
                 name="Diffuse Samples",
                 description="Number of diffuse bounce samples to render for each AA sample",
-                min=1, max=10000,
+                min=1, max=1024,
                 default=1,
                 )
         cls.glossy_samples = IntProperty(
                 name="Glossy Samples",
                 description="Number of glossy bounce samples to render for each AA sample",
-                min=1, max=10000,
+                min=1, max=1024,
                 default=1,
                 )
         cls.transmission_samples = IntProperty(
                 name="Transmission Samples",
                 description="Number of transmission bounce samples to render for each AA sample",
-                min=1, max=10000,
+                min=1, max=1024,
                 default=1,
                 )
         cls.ao_samples = IntProperty(
                 name="Ambient Occlusion Samples",
                 description="Number of ambient occlusion samples to render for each AA sample",
-                min=1, max=10000,
+                min=1, max=1024,
                 default=1,
                 )
         cls.mesh_light_samples = IntProperty(
                 name="Mesh Light Samples",
                 description="Number of mesh emission light samples to render for each AA sample",
-                min=1, max=10000,
+                min=1, max=1024,
                 default=1,
                 )
 
         cls.subsurface_samples = IntProperty(
                 name="Subsurface Samples",
                 description="Number of subsurface scattering samples to render for each AA sample",
-                min=1, max=10000,
+                min=1, max=1024,
                 default=1,
                 )
 
         cls.volume_samples = IntProperty(
                 name="Volume Samples",
                 description="Number of volume scattering samples to render for each AA sample",
-                min=1, max=10000,
+                min=1, max=1024,
                 default=1,
                 )
 
@@ -265,6 +282,13 @@ class CyclesRenderSettings(bpy.types.PropertyGroup):
                 name="Sample All Indirect Lights",
                 description="Sample all lights (for indirect samples), rather than randomly picking one",
                 default=True,
+                )
+        cls.light_sampling_threshold = FloatProperty(
+                name="Light Sampling Threshold",
+                description="Probabilistically terminate light samples when the light contribution is below this threshold (more noise but faster rendering). "
+                            "Zero disables the test and never ignores lights",
+                min=0.0, max=1.0,
+                default=0.01,
                 )
 
         cls.caustics_reflective = BoolProperty(
@@ -353,7 +377,7 @@ class CyclesRenderSettings(bpy.types.PropertyGroup):
                 description="Distance between volume shader samples when rendering the volume "
                             "(lower values give more accurate and detailed results, but also increased render time)",
                 default=0.1,
-                min=0.0000001, max=100000.0, soft_min=0.01, soft_max=1.0
+                min=0.0000001, max=100000.0, soft_min=0.01, soft_max=1.0, precision=4
                 )
 
         cls.volume_max_steps = IntProperty(
@@ -362,6 +386,28 @@ class CyclesRenderSettings(bpy.types.PropertyGroup):
                             "to avoid extremely long render times with big objects or small step sizes",
                 default=1024,
                 min=2, max=65536
+                )
+
+        cls.dicing_rate = FloatProperty(
+                name="Dicing Rate",
+                description="Size of a micropolygon in pixels",
+                min=0.1, max=1000.0, soft_min=0.5,
+                default=1.0,
+                subtype="PIXEL"
+                )
+        cls.preview_dicing_rate = FloatProperty(
+                name="Preview Dicing Rate",
+                description="Size of a micropolygon in pixels during preview render",
+                min=0.1, max=1000.0, soft_min=0.5,
+                default=8.0,
+                subtype="PIXEL"
+                )
+
+        cls.max_subdivisions = IntProperty(
+                name="Max Subdivisions",
+                description="Stop subdividing when this level is reached even if the dice rate would produce finer tessellation",
+                min=0, max=16,
+                default=12,
                 )
 
         cls.film_exposure = FloatProperty(
@@ -477,6 +523,17 @@ class CyclesRenderSettings(bpy.types.PropertyGroup):
                 description="Use BVH spatial splits: longer builder time, faster render",
                 default=False,
                 )
+        cls.debug_use_hair_bvh = BoolProperty(
+                name="Use Hair BVH",
+                description="Use special type BVH optimized for hair (uses more ram but renders faster)",
+                default=True,
+                )
+        cls.debug_bvh_time_steps = IntProperty(
+                name="BVH Time Steps",
+                description="Split BVH primitives by this number of time steps to speed up render time in cost of memory",
+                default=0,
+                min=0, max=16,
+                )
         cls.tile_order = EnumProperty(
                 name="Tile Order",
                 description="Tile order for rendering",
@@ -525,6 +582,19 @@ class CyclesRenderSettings(bpy.types.PropertyGroup):
                 min=0.0, max=5.0
                 )
 
+        cls.use_distance_cull = BoolProperty(
+                name="Use Distance Cull",
+                description="Allow objects to be culled based on the distance from camera",
+                default=False,
+                )
+
+        cls.distance_cull_margin = FloatProperty(
+                name="Cull Distance",
+                description="Cull objects which are further away from camera than this distance",
+                default=50,
+                min=0.0
+                )
+
         cls.motion_blur_position = EnumProperty(
             name="Motion Blur Position",
             default='CENTER',
@@ -554,6 +624,34 @@ class CyclesRenderSettings(bpy.types.PropertyGroup):
             min=0.0, max=1.0,
             )
 
+        cls.texture_limit = EnumProperty(
+            name="Viewport Texture Limit",
+            default='OFF',
+            description="Limit texture size used by viewport rendering",
+            items=enum_texture_limit
+            )
+
+        cls.texture_limit_render = EnumProperty(
+            name="Render Texture Limit",
+            default='OFF',
+            description="Limit texture size used by final rendering",
+            items=enum_texture_limit
+            )
+
+        cls.ao_bounces = IntProperty(
+            name="AO Bounces",
+            default=0,
+            description="Approximate indirect light with background tinted ambient occlusion at the specified bounce, 0 disables this feature",
+            min=0, max=1024,
+            )
+
+        cls.ao_bounces_render = IntProperty(
+            name="AO Bounces Render",
+            default=0,
+            description="Approximate indirect light with background tinted ambient occlusion at the specified bounce, 0 disables this feature",
+            min=0, max=1024,
+            )
+
         # Various fine-tuning debug flags
 
         def devices_update_callback(self, context):
@@ -567,6 +665,10 @@ class CyclesRenderSettings(bpy.types.PropertyGroup):
         cls.debug_use_cpu_sse3 = BoolProperty(name="SSE3", default=True)
         cls.debug_use_cpu_sse2 = BoolProperty(name="SSE2", default=True)
         cls.debug_use_qbvh = BoolProperty(name="QBVH", default=True)
+        cls.debug_use_cpu_split_kernel = BoolProperty(name="Split Kernel", default=False)
+
+        cls.debug_use_cuda_adaptive_compile = BoolProperty(name="Adaptive Compile", default=False)
+        cls.debug_use_cuda_split_kernel = BoolProperty(name="Split Kernel", default=False)
 
         cls.debug_opencl_kernel_type = EnumProperty(
             name="OpenCL Kernel Type",
@@ -593,7 +695,16 @@ class CyclesRenderSettings(bpy.types.PropertyGroup):
             update=devices_update_callback
             )
 
+        cls.debug_opencl_kernel_single_program = BoolProperty(
+            name="Single Program",
+            default=True,
+            update=devices_update_callback,
+            )
+
         cls.debug_use_opencl_debug = BoolProperty(name="Debug OpenCL", default=False)
+
+        cls.debug_opencl_mem_limit = IntProperty(name="Memory limit", default=0,
+            description="Artificial limit on OpenCL memory usage in MB (0 to disable limit)")
 
     @classmethod
     def unregister(cls):
@@ -746,6 +857,13 @@ class CyclesMaterialSettings(bpy.types.PropertyGroup):
                 description="Interpolation method to use for smoke/fire volumes",
                 items=enum_volume_interpolation,
                 default='LINEAR',
+                )
+
+        cls.displacement_method = EnumProperty(
+                name="Displacement Method",
+                description="Method to use for the displacement",
+                items=enum_displacement_methods,
+                default='BUMP',
                 )
 
     @classmethod
@@ -925,24 +1043,6 @@ class CyclesMeshSettings(bpy.types.PropertyGroup):
                 type=cls,
                 )
 
-        cls.displacement_method = EnumProperty(
-                name="Displacement Method",
-                description="Method to use for the displacement",
-                items=enum_displacement_methods,
-                default='BUMP',
-                )
-        cls.use_subdivision = BoolProperty(
-                name="Use Subdivision",
-                description="Subdivide mesh for rendering",
-                default=False,
-                )
-        cls.dicing_rate = FloatProperty(
-                name="Dicing Rate",
-                description="",
-                min=0.001, max=1000.0,
-                default=1.0,
-                )
-
     @classmethod
     def unregister(cls):
         del bpy.types.Mesh.cycles
@@ -950,11 +1050,9 @@ class CyclesMeshSettings(bpy.types.PropertyGroup):
         del bpy.types.MetaBall.cycles
 
 
-class CyclesObjectBlurSettings(bpy.types.PropertyGroup):
-
+class CyclesObjectSettings(bpy.types.PropertyGroup):
     @classmethod
     def register(cls):
-
         bpy.types.Object.cycles = PointerProperty(
                 name="Cycles Object Settings",
                 description="Cycles object settings",
@@ -983,6 +1081,31 @@ class CyclesObjectBlurSettings(bpy.types.PropertyGroup):
         cls.use_camera_cull = BoolProperty(
                 name="Use Camera Cull",
                 description="Allow this object and its duplicators to be culled by camera space culling",
+                default=False,
+                )
+
+        cls.use_distance_cull = BoolProperty(
+                name="Use Distance Cull",
+                description="Allow this object and its duplicators to be culled by distance from camera",
+                default=False,
+                )
+
+        cls.use_adaptive_subdivision = BoolProperty(
+                name="Use Adaptive Subdivision",
+                description="Use adaptive render time subdivision",
+                default=False,
+                )
+
+        cls.dicing_rate = FloatProperty(
+                name="Dicing Scale",
+                description="Multiplier for scene dicing rate (located in the Geometry Panel)",
+                min=0.1, max=1000.0, soft_min=0.5,
+                default=1.0,
+                )
+
+        cls.is_shadow_catcher = BoolProperty(
+                name="Shadow Catcher",
+                description="Only render shadows on this object, for compositing renders into real footage",
                 default=False,
                 )
 
@@ -1050,6 +1173,125 @@ class CyclesCurveRenderSettings(bpy.types.PropertyGroup):
     def unregister(cls):
         del bpy.types.Scene.cycles_curves
 
+def update_render_passes(self, context):
+    scene = context.scene
+    rd = scene.render
+    rl = rd.layers.active
+    rl.update_render_passes()
+
+class CyclesRenderLayerSettings(bpy.types.PropertyGroup):
+    @classmethod
+    def register(cls):
+        bpy.types.SceneRenderLayer.cycles = PointerProperty(
+                name="Cycles SceneRenderLayer Settings",
+                description="Cycles SceneRenderLayer Settings",
+                type=cls,
+                )
+        cls.pass_debug_bvh_traversed_nodes = BoolProperty(
+                name="Debug BVH Traversed Nodes",
+                description="Store Debug BVH Traversed Nodes pass",
+                default=False,
+                update=update_render_passes,
+                )
+        cls.pass_debug_bvh_traversed_instances = BoolProperty(
+                name="Debug BVH Traversed Instances",
+                description="Store Debug BVH Traversed Instances pass",
+                default=False,
+                update=update_render_passes,
+                )
+        cls.pass_debug_bvh_intersections = BoolProperty(
+                name="Debug BVH Intersections",
+                description="Store Debug BVH Intersections",
+                default=False,
+                update=update_render_passes,
+                )
+        cls.pass_debug_ray_bounces = BoolProperty(
+                name="Debug Ray Bounces",
+                description="Store Debug Ray Bounces pass",
+                default=False,
+                update=update_render_passes,
+                )
+
+        cls.use_denoising = BoolProperty(
+                name="Use Denoising",
+                description="Denoise the rendered image",
+                default=False,
+                update=update_render_passes,
+                )
+        cls.denoising_diffuse_direct = BoolProperty(
+                name="Diffuse Direct",
+                description="Denoise the direct diffuse lighting",
+                default=True,
+                )
+        cls.denoising_diffuse_indirect = BoolProperty(
+                name="Diffuse Indirect",
+                description="Denoise the indirect diffuse lighting",
+                default=True,
+                )
+        cls.denoising_glossy_direct = BoolProperty(
+                name="Glossy Direct",
+                description="Denoise the direct glossy lighting",
+                default=True,
+                )
+        cls.denoising_glossy_indirect = BoolProperty(
+                name="Glossy Indirect",
+                description="Denoise the indirect glossy lighting",
+                default=True,
+                )
+        cls.denoising_transmission_direct = BoolProperty(
+                name="Transmission Direct",
+                description="Denoise the direct transmission lighting",
+                default=True,
+                )
+        cls.denoising_transmission_indirect = BoolProperty(
+                name="Transmission Indirect",
+                description="Denoise the indirect transmission lighting",
+                default=True,
+                )
+        cls.denoising_subsurface_direct = BoolProperty(
+                name="Subsurface Direct",
+                description="Denoise the direct subsurface lighting",
+                default=True,
+                )
+        cls.denoising_subsurface_indirect = BoolProperty(
+                name="Subsurface Indirect",
+                description="Denoise the indirect subsurface lighting",
+                default=True,
+                )
+        cls.denoising_strength = FloatProperty(
+                name="Denoising Strength",
+                description="Controls neighbor pixel weighting for the denoising filter (lower values preserve more detail, but aren't as smooth)",
+                min=0.0, max=1.0,
+                default=0.5,
+                )
+        cls.denoising_feature_strength = FloatProperty(
+                name="Denoising Feature Strength",
+                description="Controls removal of noisy image feature passes (lower values preserve more detail, but aren't as smooth)",
+                min=0.0, max=1.0,
+                default=0.5,
+                )
+        cls.denoising_radius = IntProperty(
+                name="Denoising Radius",
+                description="Size of the image area that's used to denoise a pixel (higher values are smoother, but might lose detail and are slower)",
+                min=1, max=25,
+                default=8,
+        )
+        cls.denoising_relative_pca = BoolProperty(
+                name="Relative filter",
+                description="When removing pixels that don't carry information, use a relative threshold instead of an absolute one (can help to reduce artifacts, but might cause detail loss around edges)",
+                default=False,
+        )
+        cls.denoising_store_passes = BoolProperty(
+                name="Store denoising passes",
+                description="Store the denoising feature passes and the noisy image",
+                default=False,
+                update=update_render_passes,
+        )
+
+    @classmethod
+    def unregister(cls):
+        del bpy.types.SceneRenderLayer.cycles
+
 
 class CyclesCurveSettings(bpy.types.PropertyGroup):
     @classmethod
@@ -1094,6 +1336,107 @@ class CyclesCurveSettings(bpy.types.PropertyGroup):
         del bpy.types.ParticleSettings.cycles
 
 
+class CyclesDeviceSettings(bpy.types.PropertyGroup):
+    @classmethod
+    def register(cls):
+        cls.id = StringProperty(name="ID")
+        cls.name = StringProperty(name="Name")
+        cls.use = BoolProperty(name="Use", default=True)
+        cls.type = EnumProperty(name="Type", items=enum_device_type, default='CUDA')
+
+
+class CyclesPreferences(bpy.types.AddonPreferences):
+    bl_idname = __package__
+
+    def get_device_types(self, context):
+        import _cycles
+        has_cuda, has_opencl = _cycles.get_device_types()
+        list = [('NONE', "None", "Don't use compute device", 0)]
+        if has_cuda:
+            list.append(('CUDA', "CUDA", "Use CUDA for GPU acceleration", 1))
+        if has_opencl:
+            list.append(('OPENCL', "OpenCL", "Use OpenCL for GPU acceleration", 2))
+        return list
+
+    compute_device_type = EnumProperty(
+            name="Compute Device Type",
+            description="Device to use for computation (rendering with Cycles)",
+            items=get_device_types,
+            )
+
+    devices = bpy.props.CollectionProperty(type=CyclesDeviceSettings)
+
+    def get_devices(self):
+        import _cycles
+        # Layout of the device tuples: (Name, Type, Persistent ID)
+        device_list = _cycles.available_devices()
+
+        cuda_devices = []
+        opencl_devices = []
+        for device in device_list:
+            if not device[1] in {'CUDA', 'OPENCL'}:
+                continue
+
+            entry = None
+            # Try to find existing Device entry
+            for dev in self.devices:
+                if dev.id == device[2] and dev.type == device[1]:
+                    entry = dev
+                    break
+            # Create new entry if no existing one was found
+            if not entry:
+                entry = self.devices.add()
+                entry.id   = device[2]
+                entry.name = device[0]
+                entry.type = device[1]
+
+            # Sort entries into lists
+            if entry.type == 'CUDA':
+                cuda_devices.append(entry)
+            elif entry.type == 'OPENCL':
+                opencl_devices.append(entry)
+        return cuda_devices, opencl_devices
+
+
+    def get_num_gpu_devices(self):
+        import _cycles
+        device_list = _cycles.available_devices()
+        num = 0
+        for device in device_list:
+            if device[1] != self.compute_device_type:
+                continue
+            for dev in self.devices:
+                if dev.use and dev.id == device[2]:
+                    num += 1
+        return num
+
+
+    def has_active_device(self):
+        return self.get_num_gpu_devices() > 0
+
+
+    def draw_impl(self, layout, context):
+        layout.label(text="Cycles Compute Device:")
+        layout.row().prop(self, "compute_device_type", expand=True)
+
+        cuda_devices, opencl_devices = self.get_devices()
+        row = layout.row()
+
+        if self.compute_device_type == 'CUDA' and cuda_devices:
+            box = row.box()
+            for device in cuda_devices:
+                box.prop(device, "use", text=device.name)
+
+        if self.compute_device_type == 'OPENCL' and opencl_devices:
+            box = row.box()
+            for device in opencl_devices:
+                box.prop(device, "use", text=device.name)
+
+
+    def draw(self, context):
+        self.draw_impl(self.layout, context)
+
+
 def register():
     bpy.utils.register_class(CyclesRenderSettings)
     bpy.utils.register_class(CyclesCameraSettings)
@@ -1102,8 +1445,12 @@ def register():
     bpy.utils.register_class(CyclesWorldSettings)
     bpy.utils.register_class(CyclesVisibilitySettings)
     bpy.utils.register_class(CyclesMeshSettings)
+    bpy.utils.register_class(CyclesObjectSettings)
     bpy.utils.register_class(CyclesCurveRenderSettings)
     bpy.utils.register_class(CyclesCurveSettings)
+    bpy.utils.register_class(CyclesDeviceSettings)
+    bpy.utils.register_class(CyclesPreferences)
+    bpy.utils.register_class(CyclesRenderLayerSettings)
 
 
 def unregister():
@@ -1113,6 +1460,10 @@ def unregister():
     bpy.utils.unregister_class(CyclesLampSettings)
     bpy.utils.unregister_class(CyclesWorldSettings)
     bpy.utils.unregister_class(CyclesMeshSettings)
+    bpy.utils.unregister_class(CyclesObjectSettings)
     bpy.utils.unregister_class(CyclesVisibilitySettings)
     bpy.utils.unregister_class(CyclesCurveRenderSettings)
     bpy.utils.unregister_class(CyclesCurveSettings)
+    bpy.utils.unregister_class(CyclesDeviceSettings)
+    bpy.utils.unregister_class(CyclesPreferences)
+    bpy.utils.unregister_class(CyclesRenderLayerSettings)

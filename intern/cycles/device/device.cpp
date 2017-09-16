@@ -17,18 +17,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "device.h"
-#include "device_intern.h"
+#include "device/device.h"
+#include "device/device_intern.h"
 
-#include "util_debug.h"
-#include "util_foreach.h"
-#include "util_half.h"
-#include "util_math.h"
-#include "util_opengl.h"
-#include "util_time.h"
-#include "util_types.h"
-#include "util_vector.h"
-#include "util_string.h"
+#include "util/util_debug.h"
+#include "util/util_foreach.h"
+#include "util/util_half.h"
+#include "util/util_math.h"
+#include "util/util_opengl.h"
+#include "util/util_time.h"
+#include "util/util_types.h"
+#include "util/util_vector.h"
+#include "util/util_string.h"
 
 CCL_NAMESPACE_BEGIN
 
@@ -48,14 +48,28 @@ std::ostream& operator <<(std::ostream &os,
 	os << "Max nodes group: " << requested_features.max_nodes_group << std::endl;
 	/* TODO(sergey): Decode bitflag into list of names. */
 	os << "Nodes features: " << requested_features.nodes_features << std::endl;
-	os << "Use hair: "
-	   << string_from_bool(requested_features.use_hair)  << std::endl;
-	os << "Use object motion: "
-	   << string_from_bool(requested_features.use_object_motion)  << std::endl;
-	os << "Use camera motion: "
-	   << string_from_bool(requested_features.use_camera_motion)  << std::endl;
+	os << "Use Hair: "
+	   << string_from_bool(requested_features.use_hair) << std::endl;
+	os << "Use Object Motion: "
+	   << string_from_bool(requested_features.use_object_motion) << std::endl;
+	os << "Use Camera Motion: "
+	   << string_from_bool(requested_features.use_camera_motion) << std::endl;
 	os << "Use Baking: "
-	   << string_from_bool(requested_features.use_baking)  << std::endl;
+	   << string_from_bool(requested_features.use_baking) << std::endl;
+	os << "Use Subsurface: "
+	   << string_from_bool(requested_features.use_subsurface) << std::endl;
+	os << "Use Volume: "
+	   << string_from_bool(requested_features.use_volume) << std::endl;
+	os << "Use Branched Integrator: "
+	   << string_from_bool(requested_features.use_integrator_branched) << std::endl;
+	os << "Use Patch Evaluation: "
+	   << string_from_bool(requested_features.use_patch_evaluation) << std::endl;
+	os << "Use Transparent Shadows: "
+	   << string_from_bool(requested_features.use_transparent) << std::endl;
+	os << "Use Principled BSDF: "
+	   << string_from_bool(requested_features.use_principled) << std::endl;
+	os << "Use Denoising: "
+	   << string_from_bool(requested_features.use_denoising) << std::endl;
 	return os;
 }
 
@@ -70,7 +84,7 @@ Device::~Device()
 
 void Device::pixels_alloc(device_memory& mem)
 {
-	mem_alloc(mem, MEM_READ_WRITE);
+	mem_alloc("pixels", mem, MEM_READ_WRITE);
 }
 
 void Device::pixels_copy_from(device_memory& mem, int y, int w, int h)
@@ -250,33 +264,33 @@ Device *Device::create(DeviceInfo& info, Stats &stats, bool background)
 
 DeviceType Device::type_from_string(const char *name)
 {
-	if(strcmp(name, "cpu") == 0)
+	if(strcmp(name, "CPU") == 0)
 		return DEVICE_CPU;
-	else if(strcmp(name, "cuda") == 0)
+	else if(strcmp(name, "CUDA") == 0)
 		return DEVICE_CUDA;
-	else if(strcmp(name, "opencl") == 0)
+	else if(strcmp(name, "OPENCL") == 0)
 		return DEVICE_OPENCL;
-	else if(strcmp(name, "network") == 0)
+	else if(strcmp(name, "NETWORK") == 0)
 		return DEVICE_NETWORK;
-	else if(strcmp(name, "multi") == 0)
+	else if(strcmp(name, "MULTI") == 0)
 		return DEVICE_MULTI;
-	
+
 	return DEVICE_NONE;
 }
 
 string Device::string_from_type(DeviceType type)
 {
 	if(type == DEVICE_CPU)
-		return "cpu";
+		return "CPU";
 	else if(type == DEVICE_CUDA)
-		return "cuda";
+		return "CUDA";
 	else if(type == DEVICE_OPENCL)
-		return "opencl";
+		return "OPENCL";
 	else if(type == DEVICE_NETWORK)
-		return "network";
+		return "NETWORK";
 	else if(type == DEVICE_MULTI)
-		return "multi";
-	
+		return "MULTI";
+
 	return "";
 }
 
@@ -299,9 +313,6 @@ vector<DeviceType>& Device::available_types()
 #ifdef WITH_NETWORK
 		types.push_back(DEVICE_NETWORK);
 #endif
-#ifdef WITH_MULTI
-		types.push_back(DEVICE_MULTI);
-#endif
 
 		need_types_update = false;
 	}
@@ -321,10 +332,6 @@ vector<DeviceInfo>& Device::available_devices()
 #ifdef WITH_OPENCL
 		if(device_opencl_init())
 			device_opencl_info(devices);
-#endif
-
-#ifdef WITH_MULTI
-		device_multi_info(devices);
 #endif
 
 		device_cpu_info(devices);
@@ -360,6 +367,29 @@ string Device::device_capabilities()
 	return capabilities;
 }
 
+DeviceInfo Device::get_multi_device(vector<DeviceInfo> subdevices)
+{
+	assert(subdevices.size() > 1);
+
+	DeviceInfo info;
+	info.type = DEVICE_MULTI;
+	info.id = "MULTI";
+	info.description = "Multi Device";
+	info.multi_devices = subdevices;
+	info.num = 0;
+
+	info.has_bindless_textures = true;
+	info.pack_images = false;
+	foreach(DeviceInfo &device, subdevices) {
+		assert(device.type == info.multi_devices[0].type);
+
+		info.pack_images |= device.pack_images;
+		info.has_bindless_textures &= device.has_bindless_textures;
+	}
+
+	return info;
+}
+
 void Device::tag_update()
 {
 	need_types_update = true;
@@ -372,6 +402,18 @@ void Device::free_memory()
 	need_devices_update = true;
 	types.free_memory();
 	devices.free_memory();
+}
+
+
+device_sub_ptr::device_sub_ptr(Device *device, device_memory& mem, int offset, int size, MemoryType type)
+ : device(device)
+{
+	ptr = device->mem_alloc_sub_ptr(mem, offset, size, type);
+}
+
+device_sub_ptr::~device_sub_ptr()
+{
+	device->mem_free_sub_ptr(ptr);
 }
 
 CCL_NAMESPACE_END

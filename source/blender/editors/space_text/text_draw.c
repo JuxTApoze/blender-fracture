@@ -926,6 +926,7 @@ static void draw_textscroll(const SpaceText *st, rcti *scroll, rcti *back)
 
 /*********************** draw documentation *******************************/
 
+#if 0
 static void draw_documentation(const SpaceText *st, ARegion *ar)
 {
 	TextDrawContext tdc = {0};
@@ -1009,11 +1010,12 @@ static void draw_documentation(const SpaceText *st, ARegion *ar)
 		if (lines >= DOC_HEIGHT) break;
 	}
 
-	if (0 /* XXX doc_scroll*/ > 0 && lines < DOC_HEIGHT) {
+	if (0 /* XXX doc_scroll*/ /* > 0 && lines < DOC_HEIGHT */) {
 		// XXX doc_scroll--;
 		draw_documentation(st, ar);
 	}
 }
+#endif
 
 /*********************** draw suggestion list *******************************/
 
@@ -1108,8 +1110,13 @@ static void draw_cursor(SpaceText *st, ARegion *ar)
 		vsell = txt_get_span(text->lines.first, text->sell) - st->top + offl;
 		vselc = text_get_char_pos(st, text->sell->line, text->selc) - st->left + offc;
 
-		if (vcurc < 0) vcurc = 0;
-		if (vselc < 0) vselc = 0, hidden = 1;
+		if (vcurc < 0) {
+			vcurc = 0;
+		}
+		if (vselc < 0) {
+			vselc = 0;
+			hidden = 1;
+		}
 		
 		UI_ThemeColor(TH_SHADE2);
 		x = st->showlinenrs ? TXT_OFFSET + TEXTXLOC : TXT_OFFSET;
@@ -1135,11 +1142,16 @@ static void draw_cursor(SpaceText *st, ARegion *ar)
 			}
 
 			y -= froml * lheight;
-			glRecti(x + fromc * st->cwidth - 1, y, ar->winx, y - lheight); y -= lheight;
-			for (i = froml + 1; i < tol; i++)
-				glRecti(x - 4, y, ar->winx, y - lheight),  y -= lheight;
 
-			glRecti(x - 4, y, x + toc * st->cwidth, y - lheight);  y -= lheight;
+			glRecti(x + fromc * st->cwidth - 1, y, ar->winx, y - lheight);
+			y -= lheight;
+			for (i = froml + 1; i < tol; i++) {
+				glRecti(x - 4, y, ar->winx, y - lheight);
+				y -= lheight;
+			}
+
+			glRecti(x - 4, y, x + toc * st->cwidth, y - lheight);
+			y -= lheight;
 		}
 	}
 	else {
@@ -1477,7 +1489,7 @@ void draw_text_main(SpaceText *st, ARegion *ar)
 	/* draw other stuff */
 	draw_brackets(st, &tdc, ar);
 	draw_textscroll(st, &scroll, &back);
-	draw_documentation(st, ar);
+	/* draw_documentation(st, ar); - No longer supported */
 	draw_suggestion_list(st, &tdc, ar);
 	
 	text_font_end(&tdc);

@@ -17,12 +17,13 @@
 #ifndef __SVM_H__
 #define __SVM_H__
 
-#include "attribute.h"
-#include "graph.h"
-#include "shader.h"
+#include "render/attribute.h"
+#include "render/graph.h"
+#include "render/shader.h"
 
-#include "util_set.h"
-#include "util_string.h"
+#include "util/util_set.h"
+#include "util/util_string.h"
+#include "util/util_thread.h"
 
 CCL_NAMESPACE_BEGIN
 
@@ -46,6 +47,15 @@ public:
 
 	void device_update(Device *device, DeviceScene *dscene, Scene *scene, Progress& progress);
 	void device_free(Device *device, DeviceScene *dscene, Scene *scene);
+
+protected:
+	/* Lock used to synchronize threaded nodes compilation. */
+	thread_spin_lock nodes_lock_;
+
+	void device_update_shader(Scene *scene,
+	                          Shader *shader,
+	                          Progress *progress,
+	                          vector<int4> *global_svm_nodes);
 };
 
 /* Graph Compiler */
@@ -95,17 +105,19 @@ public:
 	             int index,
 	             Summary *summary = NULL);
 
-	void stack_assign(ShaderOutput *output);
-	void stack_assign(ShaderInput *input);
-	int stack_find_offset(ShaderSocketType type);
-	void stack_clear_offset(ShaderSocketType type, int offset);
+	int stack_assign(ShaderOutput *output);
+	int stack_assign(ShaderInput *input);
+	int stack_assign_if_linked(ShaderInput *input);
+	int stack_assign_if_linked(ShaderOutput *output);
+	int stack_find_offset(int size);
+	int stack_find_offset(SocketType::Type type);
+	void stack_clear_offset(SocketType::Type type, int offset);
 	void stack_link(ShaderInput *input, ShaderOutput *output);
 
-	void add_node(NodeType type, int a = 0, int b = 0, int c = 0);
+	void add_node(ShaderNodeType type, int a = 0, int b = 0, int c = 0);
 	void add_node(int a = 0, int b = 0, int c = 0, int d = 0);
-	void add_node(NodeType type, const float3& f);
+	void add_node(ShaderNodeType type, const float3& f);
 	void add_node(const float4& f);
-	void add_array(float4 *f, int num);
 	uint attribute(ustring name);
 	uint attribute(AttributeStandard std);
 	uint encode_uchar4(uint x, uint y = 0, uint z = 0, uint w = 0);
@@ -146,15 +158,9 @@ protected:
 		int users[SVM_STACK_SIZE];
 	};
 
-	struct StackBackup {
-		Stack stack;
-		vector<int> offsets;
-		ShaderNodeSet done;
-	};
-
 	/* Global state of the compiler accessible from the compilation routines. */
 	struct CompilerState {
-		CompilerState(ShaderGraph *graph);
+		explicit CompilerState(ShaderGraph *graph);
 
 		/* ** Global state, used by various compilation steps. ** */
 
@@ -176,11 +182,8 @@ protected:
 		vector<bool> nodes_done_flag;
 	};
 
-	void stack_backup(StackBackup& backup, ShaderNodeSet& done);
-	void stack_restore(StackBackup& backup, ShaderNodeSet& done);
-
 	void stack_clear_temporary(ShaderNode *node);
-	int stack_size(ShaderSocketType type);
+	int stack_size(SocketType::Type type);
 	void stack_clear_users(ShaderNode *node, ShaderNodeSet& done);
 
 	bool node_skip_input(ShaderNode *node, ShaderInput *input);
@@ -207,7 +210,7 @@ protected:
 	/* compile */
 	void compile_type(Shader *shader, ShaderGraph *graph, ShaderType type);
 
-	vector<int4> svm_nodes;
+	vector<int4> current_svm_nodes;
 	ShaderType current_type;
 	Shader *current_shader;
 	ShaderGraph *current_graph;

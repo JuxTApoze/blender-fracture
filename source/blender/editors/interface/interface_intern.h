@@ -42,6 +42,7 @@ struct ARegion;
 struct bContext;
 struct uiHandleButtonData;
 struct wmEvent;
+struct wmKeyConfig;
 struct wmOperatorType;
 struct wmTimer;
 struct uiStyle;
@@ -126,7 +127,7 @@ enum {
  * (e.g. 'x' icon in search menu) - used with ui_but_icon_extra_get */
 typedef enum uiButExtraIconType {
 	UI_BUT_ICONEXTRA_NONE = 1,
-	UI_BUT_ICONEXTRA_UNLINK,
+	UI_BUT_ICONEXTRA_CLEAR,
 	UI_BUT_ICONEXTRA_EYEDROPPER,
 } uiButExtraIconType;
 
@@ -255,6 +256,7 @@ struct uiBut {
 	uiButCompleteFunc autocomplete_func;
 	void *autofunc_arg;
 	
+	uiButSearchCreateFunc search_create_func;
 	uiButSearchFunc search_func;
 	void *search_arg;
 
@@ -269,10 +271,10 @@ struct uiBut {
 	uiButToolTipFunc tip_func;
 	void *tip_argN;
 
-	const char *lockstr;
+	/* info on why button is disabled, displayed in tooltip */
+	const char *disabled_info;
 
 	BIFIconID icon;
-	bool lock;
 	char dt; /* drawtype: UI_EMBOSS, UI_EMBOSS_NONE ... etc, copied from the block */
 	signed char pie_dir; /* direction in a pie menu, used for collision detection (RadialDirection) */
 	char changed; /* could be made into a single flag */
@@ -471,7 +473,9 @@ extern void ui_hsvcircle_pos_from_vals(struct uiBut *but, const rcti *rect, floa
 extern void ui_hsvcube_pos_from_vals(struct uiBut *but, const rcti *rect, float *hsv, float *xp, float *yp);
 bool ui_but_is_colorpicker_display_space(struct uiBut *but);
 
-extern void ui_but_string_get_ex(uiBut *but, char *str, const size_t maxlen, const int float_precision) ATTR_NONNULL();
+extern void ui_but_string_get_ex(
+        uiBut *but, char *str, const size_t maxlen,
+        const int float_precision, const bool use_exp_float, bool *r_use_exp_float) ATTR_NONNULL(1, 2);
 extern void ui_but_string_get(uiBut *but, char *str, const size_t maxlen) ATTR_NONNULL();
 extern char *ui_but_string_get_dynamic(uiBut *but, int *r_str_size);
 extern void ui_but_convert_to_unit_alt_name(uiBut *but, char *str, size_t maxlen) ATTR_NONNULL();
@@ -544,12 +548,15 @@ struct uiPopupBlockHandle {
 	
 	/* store data for refreshing popups */
 	struct uiPopupBlockCreate popup_create_vars;
+	/* true if we can re-create the popup using 'popup_create_vars' */
+	bool can_refresh;
 
 	struct wmTimer *scrolltimer;
 
 	struct uiKeyNavLock keynav_state;
 
 	/* for operator popups */
+	struct wmOperator *popup_op;
 	struct wmOperatorType *optype;
 	ScrArea *ctx_area;
 	ARegion *ctx_region;
@@ -589,7 +596,8 @@ void ui_color_picker_to_rgb_v(const float r_cp[3], float rgb[3]);
 void ui_color_picker_to_rgb(float r_cp0, float r_cp1, float r_cp2, float *r, float *g, float *b);
 
 /* searchbox for string button */
-ARegion *ui_searchbox_create(struct bContext *C, struct ARegion *butregion, uiBut *but);
+ARegion *ui_searchbox_create_generic(struct bContext *C, struct ARegion *butregion, uiBut *but);
+ARegion *ui_searchbox_create_operator(struct bContext *C, struct ARegion *butregion, uiBut *but);
 bool ui_searchbox_inside(struct ARegion *ar, int x, int y);
 int  ui_searchbox_find_index(struct ARegion *ar, const char *name);
 void ui_searchbox_update(struct bContext *C, struct ARegion *ar, uiBut *but, const bool reset);
@@ -655,6 +663,7 @@ extern int ui_but_menu_direction(uiBut *but);
 extern void ui_but_text_password_hide(char password_str[UI_MAX_DRAW_STR], uiBut *but, const bool restore);
 extern uiBut *ui_but_find_select_in_enum(uiBut *but, int direction);
 extern uiBut *ui_but_find_active_in_region(struct ARegion *ar);
+extern uiBut *ui_but_find_mouse_over(struct ARegion *ar, const struct wmEvent *event);
 bool ui_but_is_editable(const uiBut *but);
 bool ui_but_is_editable_as_text(const uiBut *but);
 void ui_but_pie_dir_visual(RadialDirection dir, float vec[2]);
@@ -721,23 +730,18 @@ void ui_block_align_calc(uiBlock *block);
 
 /* interface_anim.c */
 void ui_but_anim_flag(uiBut *but, float cfra);
-void ui_but_anim_insert_keyframe(struct bContext *C);
-void ui_but_anim_delete_keyframe(struct bContext *C);
-void ui_but_anim_clear_keyframe(struct bContext *C);
-void ui_but_anim_add_driver(struct bContext *C);
-void ui_but_anim_remove_driver(struct bContext *C);
 void ui_but_anim_copy_driver(struct bContext *C);
 void ui_but_anim_paste_driver(struct bContext *C);
-void ui_but_anim_add_keyingset(struct bContext *C);
-void ui_but_anim_remove_keyingset(struct bContext *C);
 bool ui_but_anim_expression_get(uiBut *but, char *str, size_t maxlen);
 bool ui_but_anim_expression_set(uiBut *but, const char *str);
 bool ui_but_anim_expression_create(uiBut *but, const char *str);
 void ui_but_anim_autokey(struct bContext *C, uiBut *but, struct Scene *scene, float cfra);
 
 /* interface_eyedropper.c */
+struct wmKeyMap *eyedropper_modal_keymap(struct wmKeyConfig *keyconf);
 void UI_OT_eyedropper_color(struct wmOperatorType *ot);
 void UI_OT_eyedropper_id(struct wmOperatorType *ot);
 void UI_OT_eyedropper_depth(struct wmOperatorType *ot);
+void UI_OT_eyedropper_driver(struct wmOperatorType *ot);
 
 #endif  /* __INTERFACE_INTERN_H__ */

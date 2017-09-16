@@ -62,6 +62,7 @@ struct AnimData;
 struct Editing;
 struct SceneStats;
 struct bGPdata;
+struct bGPDbrush;
 struct MovieClip;
 struct ColorSpace;
 
@@ -134,6 +135,37 @@ typedef struct QuicktimeCodecSettings {
 	int pad1;
 } QuicktimeCodecSettings;
 
+typedef enum FFMpegPreset {
+	FFM_PRESET_NONE,
+	FFM_PRESET_ULTRAFAST,
+	FFM_PRESET_SUPERFAST,
+	FFM_PRESET_VERYFAST,
+	FFM_PRESET_FASTER,
+	FFM_PRESET_FAST,
+	FFM_PRESET_MEDIUM,
+	FFM_PRESET_SLOW,
+	FFM_PRESET_SLOWER,
+	FFM_PRESET_VERYSLOW,
+} FFMpegPreset;
+
+
+/* Mapping from easily-understandable descriptions to CRF values.
+ * Assumes we output 8-bit video. Needs to be remapped if 10-bit
+ * is output.
+ * We use a slightly wider than "subjectively sane range" according
+ * to https://trac.ffmpeg.org/wiki/Encode/H.264#a1.ChooseaCRFvalue
+ */
+typedef enum FFMpegCrf {
+	FFM_CRF_NONE = -1,
+	FFM_CRF_LOSSLESS = 0,
+	FFM_CRF_PERC_LOSSLESS = 17,
+	FFM_CRF_HIGH = 20,
+	FFM_CRF_MEDIUM = 23,
+	FFM_CRF_LOW = 26,
+	FFM_CRF_VERYLOW = 29,
+	FFM_CRF_LOWEST = 32,
+} FFMpegCrf;
+
 typedef struct FFMpegCodecData {
 	int type;
 	int codec;
@@ -145,13 +177,18 @@ typedef struct FFMpegCodecData {
 	int audio_pad;
 	float audio_volume;
 	int gop_size;
+	int max_b_frames; /* only used if FFMPEG_USE_MAX_B_FRAMES flag is set. */
 	int flags;
+	int constant_rate_factor;
+	int ffmpeg_preset; /* see FFMpegPreset */
 
 	int rc_min_rate;
 	int rc_max_rate;
 	int rc_buffer_size;
 	int mux_packet_size;
 	int mux_rate;
+	int pad1;
+
 	IDProperty *properties;
 } FFMpegCodecData;
 
@@ -192,7 +229,9 @@ typedef struct SceneRenderLayer {
 
 	int samples;
 	float pass_alpha_threshold;
-	
+
+	IDProperty *prop;
+
 	struct FreestyleConfig freestyleConfig;
 } SceneRenderLayer;
 
@@ -246,8 +285,42 @@ typedef enum ScenePassType {
 	SCE_PASS_SUBSURFACE_DIRECT        = (1 << 28),
 	SCE_PASS_SUBSURFACE_INDIRECT      = (1 << 29),
 	SCE_PASS_SUBSURFACE_COLOR         = (1 << 30),
-	SCE_PASS_DEBUG                    = (1 << 31),  /* This is a virtual pass. */
 } ScenePassType;
+
+#define RE_PASSNAME_COMBINED "Combined"
+#define RE_PASSNAME_Z "Depth"
+#define RE_PASSNAME_VECTOR "Vector"
+#define RE_PASSNAME_NORMAL "Normal"
+#define RE_PASSNAME_UV "UV"
+#define RE_PASSNAME_RGBA "Color"
+#define RE_PASSNAME_EMIT "Emit"
+#define RE_PASSNAME_DIFFUSE "Diffuse"
+#define RE_PASSNAME_SPEC "Spec"
+#define RE_PASSNAME_SHADOW "Shadow"
+
+#define RE_PASSNAME_AO "AO"
+#define RE_PASSNAME_ENVIRONMENT "Env"
+#define RE_PASSNAME_INDIRECT "Indirect"
+#define RE_PASSNAME_REFLECT "Reflect"
+#define RE_PASSNAME_REFRACT "Refract"
+#define RE_PASSNAME_INDEXOB "IndexOB"
+#define RE_PASSNAME_INDEXMA "IndexMA"
+#define RE_PASSNAME_MIST "Mist"
+
+#define RE_PASSNAME_RAYHITS "RayHits"
+#define RE_PASSNAME_DIFFUSE_DIRECT "DiffDir"
+#define RE_PASSNAME_DIFFUSE_INDIRECT "DiffInd"
+#define RE_PASSNAME_DIFFUSE_COLOR "DiffCol"
+#define RE_PASSNAME_GLOSSY_DIRECT "GlossDir"
+#define RE_PASSNAME_GLOSSY_INDIRECT "GlossInd"
+#define RE_PASSNAME_GLOSSY_COLOR "GlossCol"
+#define RE_PASSNAME_TRANSM_DIRECT "TransDir"
+#define RE_PASSNAME_TRANSM_INDIRECT "TransInd"
+#define RE_PASSNAME_TRANSM_COLOR "TransCol"
+
+#define RE_PASSNAME_SUBSURFACE_DIRECT "SubsurfaceDir"
+#define RE_PASSNAME_SUBSURFACE_INDIRECT "SubsurfaceInd"
+#define RE_PASSNAME_SUBSURFACE_COLOR "SubsurfaceCol"
 
 /* note, srl->passflag is treestore element 'nr' in outliner, short still... */
 
@@ -678,7 +751,7 @@ typedef struct RenderData {
 
 	/* sequencer options */
 	char seq_prev_type;
-	char seq_rend_type;
+	char seq_rend_type;  /* UNUSED! */
 	char seq_flag; /* flag use for sequence render/draw */
 	char pad5[5];
 
@@ -795,8 +868,14 @@ typedef struct RecastData {
 	int vertsperpoly;
 	float detailsampledist;
 	float detailsamplemaxerror;
-	short pad1, pad2;
+	char partitioning;
+	char pad1;
+	short pad2;
 } RecastData;
+
+#define RC_PARTITION_WATERSHED 0
+#define RC_PARTITION_MONOTONE 1
+#define RC_PARTITION_LAYERS 2
 
 typedef struct GameData {
 
@@ -896,6 +975,7 @@ typedef struct GameData {
 #define GAME_GLSL_NO_COLOR_MANAGEMENT		(1 << 15)
 #define GAME_SHOW_OBSTACLE_SIMULATION		(1 << 16)
 #define GAME_NO_MATERIAL_CACHING			(1 << 17)
+#define GAME_GLSL_NO_ENV_LIGHTING			(1 << 18)
 /* Note: GameData.flag is now an int (max 32 flags). A short could only take 16 flags */
 
 /* GameData.playerflag */
@@ -1059,7 +1139,7 @@ typedef struct Sculpt {
 	float gravity_factor;
 
 	/* scale for constant detail size */
-	float constant_detail;
+	float constant_detail; /* Constant detail resolution (Blender unit / constant_detail) */
 	float detail_percent;
 	float pad;
 
@@ -1110,11 +1190,19 @@ typedef enum eGP_EditBrush_Types {
 	GP_EDITBRUSH_TYPE_SUBDIVIDE = 7,
 	GP_EDITBRUSH_TYPE_SIMPLIFY  = 8,
 	GP_EDITBRUSH_TYPE_CLONE     = 9,
-	
+	GP_EDITBRUSH_TYPE_STRENGTH  = 10,
+
 	/* !!! Update GP_EditBrush_Data brush[###]; below !!! */
 	TOT_GP_EDITBRUSH_TYPES
 } eGP_EditBrush_Types;
 
+/* Lock axis options */
+typedef enum eGP_Lockaxis_Types {
+	GP_LOCKAXIS_NONE = 0,
+	GP_LOCKAXIS_X = 1,
+	GP_LOCKAXIS_Y = 2,
+	GP_LOCKAXIS_Z = 3
+} eGP_Lockaxis_Types;
 
 /* Settings for a GPencil Stroke Sculpting Brush */
 typedef struct GP_EditBrush_Data {
@@ -1141,18 +1229,70 @@ typedef enum eGP_EditBrush_Flag {
 
 /* GPencil Stroke Sculpting Settings */
 typedef struct GP_BrushEdit_Settings {
-	GP_EditBrush_Data brush[10];  /* TOT_GP_EDITBRUSH_TYPES */
+	GP_EditBrush_Data brush[11];  /* TOT_GP_EDITBRUSH_TYPES */
 	void *paintcursor;            /* runtime */
 	
 	int brushtype;                /* eGP_EditBrush_Types */
 	int flag;                     /* eGP_BrushEdit_SettingsFlag */
+	int lock_axis;                /* lock drawing to one axis */
+	float alpha;                  /* alpha factor for selection color */
 } GP_BrushEdit_Settings;
 
 /* GP_BrushEdit_Settings.flag */
 typedef enum eGP_BrushEdit_SettingsFlag {
 	/* only affect selected points */
-	GP_BRUSHEDIT_FLAG_SELECT_MASK = (1 << 0)
+	GP_BRUSHEDIT_FLAG_SELECT_MASK = (1 << 0),
+	/* apply brush to position */
+	GP_BRUSHEDIT_FLAG_APPLY_POSITION = (1 << 1),
+	/* apply brush to strength */
+	GP_BRUSHEDIT_FLAG_APPLY_STRENGTH = (1 << 2),
+	/* apply brush to thickness */
+	GP_BRUSHEDIT_FLAG_APPLY_THICKNESS = (1 << 3),
 } eGP_BrushEdit_SettingsFlag;
+
+
+/* Settings for GP Interpolation Operators */
+typedef struct GP_Interpolate_Settings {
+	short flag;                        /* eGP_Interpolate_SettingsFlag */
+	
+	char type;                         /* eGP_Interpolate_Type - Interpolation Mode */ 
+	char easing;                       /* eBezTriple_Easing - Easing mode (if easing equation used) */
+	
+	float back;                        /* BEZT_IPO_BACK */
+	float amplitude, period;           /* BEZT_IPO_ELASTIC */
+	
+	struct CurveMapping *custom_ipo;   /* custom interpolation curve (for use with GP_IPO_CURVEMAP) */
+} GP_Interpolate_Settings;
+
+/* GP_Interpolate_Settings.flag */
+typedef enum eGP_Interpolate_SettingsFlag {
+	/* apply interpolation to all layers */
+	GP_TOOLFLAG_INTERPOLATE_ALL_LAYERS    = (1 << 0),
+	/* apply interpolation to only selected */
+	GP_TOOLFLAG_INTERPOLATE_ONLY_SELECTED = (1 << 1),
+} eGP_Interpolate_SettingsFlag;
+
+/* GP_Interpolate_Settings.type */
+typedef enum eGP_Interpolate_Type {
+	/* Traditional Linear Interpolation */
+	GP_IPO_LINEAR   = 0,
+	
+	/* CurveMap Defined Interpolation */
+	GP_IPO_CURVEMAP = 1,
+	
+	/* Easing Equations */
+	GP_IPO_BACK = 3,
+	GP_IPO_BOUNCE = 4,
+	GP_IPO_CIRC = 5,
+	GP_IPO_CUBIC = 6,
+	GP_IPO_ELASTIC = 7,
+	GP_IPO_EXPO = 8,
+	GP_IPO_QUAD = 9,
+	GP_IPO_QUART = 10,
+	GP_IPO_QUINT = 11,
+	GP_IPO_SINE = 12,
+} eGP_Interpolate_Type;
+
 
 /* *************************************************************** */
 /* Transform Orientations */
@@ -1260,6 +1400,49 @@ typedef enum {
 	UNIFIED_PAINT_BRUSH_ALPHA_PRESSURE  = (1 << 4)
 } UnifiedPaintSettingsFlags;
 
+
+typedef struct CurvePaintSettings {
+	char curve_type;
+	char flag;
+	char depth_mode;
+	char surface_plane;
+	char fit_method;
+	char pad;
+	short error_threshold;
+	float radius_min, radius_max;
+	float radius_taper_start, radius_taper_end;
+	float surface_offset;
+	float corner_angle;
+} CurvePaintSettings;
+
+/* CurvePaintSettings.flag */
+enum {
+	CURVE_PAINT_FLAG_CORNERS_DETECT             = (1 << 0),
+	CURVE_PAINT_FLAG_PRESSURE_RADIUS            = (1 << 1),
+	CURVE_PAINT_FLAG_DEPTH_STROKE_ENDPOINTS     = (1 << 2),
+	CURVE_PAINT_FLAG_DEPTH_STROKE_OFFSET_ABS    = (1 << 3),
+};
+
+/* CurvePaintSettings.fit_method */
+enum {
+	CURVE_PAINT_FIT_METHOD_REFIT            = 0,
+	CURVE_PAINT_FIT_METHOD_SPLIT            = 1,
+};
+
+/* CurvePaintSettings.depth_mode */
+enum {
+	CURVE_PAINT_PROJECT_CURSOR              = 0,
+	CURVE_PAINT_PROJECT_SURFACE             = 1,
+};
+
+/* CurvePaintSettings.surface_plane */
+enum {
+	CURVE_PAINT_SURFACE_PLANE_NORMAL_VIEW           = 0,
+	CURVE_PAINT_SURFACE_PLANE_NORMAL_SURFACE        = 1,
+	CURVE_PAINT_SURFACE_PLANE_VIEW                  = 2,
+};
+
+
 /* *************************************************************** */
 /* Stats */
 
@@ -1327,6 +1510,12 @@ typedef struct ToolSettings {
 	
 	/* Grease Pencil Sculpt */
 	struct GP_BrushEdit_Settings gp_sculpt;
+	
+	/* Grease Pencil Interpolation Tool(s) */
+	struct GP_Interpolate_Settings gp_interpolate;
+	
+	/* Grease Pencil Drawing Brushes (bGPDbrush) */
+	ListBase gp_brushes; 
 
 	/* Image Paint (8 byttse aligned please!) */
 	struct ImagePaintSettings imapaint;
@@ -1342,10 +1531,10 @@ typedef struct ToolSettings {
 
 	/* Auto-Keying Mode */
 	short autokey_mode, autokey_flag;	/* defines in DNA_userdef_types.h */
+	char keyframe_type;                 /* keyframe type (see DNA_curve_types.h) */
 
 	/* Multires */
 	char multires_subdiv_type;
-	char pad3[1];
 
 	/* Skeleton generation */
 	short skgen_resolution;
@@ -1410,6 +1599,8 @@ typedef struct ToolSettings {
 
 	/* Unified Paint Settings */
 	struct UnifiedPaintSettings unified_paint_settings;
+
+	struct CurvePaintSettings curve_paint_settings;
 
 	struct MeshStatVis statvis;
 } ToolSettings;
@@ -1559,8 +1750,8 @@ typedef struct Scene {
 	/* use preview range */
 #define SCER_PRV_RANGE	(1<<0)
 #define SCER_LOCK_FRAME_SELECTION	(1<<1)
-	/* timeline/keyframe jumping - only selected items (on by default) */
-#define SCE_KEYS_NO_SELONLY	(1<<2)
+	/* show/use subframes (for checking motion blur) */
+#define SCER_SHOW_SUBFRAME	(1<<3)
 
 /* mode (int now) */
 #define R_OSA			0x0001
@@ -1596,9 +1787,10 @@ typedef struct Scene {
 #define R_SIMPLIFY			0x1000000
 #define R_EDGE_FRS			0x2000000 /* R_EDGE reserved for Freestyle */
 #define R_PERSISTENT_DATA	0x4000000 /* keep data around for re-render */
+#define R_USE_WS_SHADING	0x8000000 /* use world space interpretation of lighting data */
 
 /* seq_flag */
-#define R_SEQ_GL_PREV 1
+// #define R_SEQ_GL_PREV 1  // UNUSED, we just use setting from seq_prev_type now.
 // #define R_SEQ_GL_REND 2  // UNUSED, opengl render has its own operator now.
 #define R_SEQ_SOLID_TEX 4
 
@@ -1671,9 +1863,12 @@ typedef struct Scene {
 #define R_STAMP_RENDERTIME	0x0400
 #define R_STAMP_CAMERALENS	0x0800
 #define R_STAMP_STRIPMETA	0x1000
+#define R_STAMP_MEMORY		0x2000
+#define R_STAMP_HIDE_LABELS	0x4000
 #define R_STAMP_ALL (R_STAMP_TIME|R_STAMP_FRAME|R_STAMP_DATE|R_STAMP_CAMERA|R_STAMP_SCENE| \
                      R_STAMP_NOTE|R_STAMP_MARKER|R_STAMP_FILENAME|R_STAMP_SEQSTRIP|        \
-                     R_STAMP_RENDERTIME|R_STAMP_CAMERALENS)
+                     R_STAMP_RENDERTIME|R_STAMP_CAMERALENS|R_STAMP_MEMORY|                 \
+                     R_STAMP_HIDE_LABELS)
 
 /* alphamode */
 #define R_ADDSKY		0
@@ -1739,16 +1934,19 @@ extern const char *RE_engine_id_CYCLES;
 
 /* **************** SCENE ********************* */
 
+/* note that much higher maxframes give imprecise sub-frames, see: T46859 */
+/* Current precision is 16 for the sub-frames closer to MAXFRAME. */
+
 /* for general use */
-#define MAXFRAME	300000
-#define MAXFRAMEF	300000.0f
+#define MAXFRAME	1048574
+#define MAXFRAMEF	1048574.0f
 
 #define MINFRAME	0
 #define MINFRAMEF	0.0f
 
 /* (minimum frame number for current-frame) */
-#define MINAFRAME	-300000
-#define MINAFRAMEF	-300000.0f
+#define MINAFRAME	-1048574
+#define MINAFRAMEF	-1048574.0f
 
 /* depricate this! */
 #define TESTBASE(v3d, base)  (                                                \
@@ -1888,6 +2086,7 @@ typedef enum eVGroupSelect {
 #define SCE_DS_COLLAPSED		(1<<1)
 #define SCE_NLA_EDIT_ON			(1<<2)
 #define SCE_FRAME_DROP			(1<<3)
+#define SCE_KEYS_NO_SELONLY	    (1<<4)
 
 
 	/* return flag BKE_scene_base_iter_next functions */
@@ -1908,6 +2107,7 @@ enum {
 #endif
 	FFMPEG_AUTOSPLIT_OUTPUT = 2,
 	FFMPEG_LOSSLESS_OUTPUT  = 4,
+	FFMPEG_USE_MAX_B_FRAMES = (1 << 3),
 };
 
 /* Paint.flags */
@@ -2020,6 +2220,8 @@ typedef enum eGPencil_Flags {
 	GP_TOOL_FLAG_PAINTSESSIONS_ON       = (1 << 0),
 	/* When creating new frames, the last frame gets used as the basis for the new one */
 	GP_TOOL_FLAG_RETAIN_LAST            = (1 << 1),
+	/* Add the strokes below all strokes in the layer */
+	GP_TOOL_FLAG_PAINT_ONBACK = (1 << 2)
 } eGPencil_Flags;
 
 /* toolsettings->gpencil_src */

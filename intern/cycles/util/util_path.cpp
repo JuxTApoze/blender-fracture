@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-#include "util_debug.h"
-#include "util_md5.h"
-#include "util_path.h"
-#include "util_string.h"
+#include "util/util_debug.h"
+#include "util/util_md5.h"
+#include "util/util_path.h"
+#include "util/util_string.h"
 
 #include <OpenImageIO/filesystem.h>
 #include <OpenImageIO/strutil.h>
@@ -36,13 +36,16 @@ OIIO_NAMESPACE_USING
 #else
 #  define DIR_SEP '/'
 #  include <dirent.h>
+#  include <pwd.h>
+#  include <unistd.h>
+#  include <sys/types.h>
 #endif
 
 #ifdef HAVE_SHLWAPI_H
 #  include <shlwapi.h>
 #endif
 
-#include "util_windows.h"
+#include "util/util_windows.h"
 
 CCL_NAMESPACE_BEGIN
 
@@ -57,13 +60,13 @@ typedef struct _stat path_stat_t;
 #  ifndef S_ISDIR
 #    define S_ISDIR(x) (((x) & _S_IFDIR) == _S_IFDIR)
 #  endif
-#  define mkdir(path, mode) _mkdir(path)
 #else
 typedef struct stat path_stat_t;
 #endif
 
 static string cached_path = "";
 static string cached_user_path = "";
+static string cached_xdg_cache_path = "";
 
 namespace {
 
@@ -93,7 +96,7 @@ public:
 	{
 	}
 
-	directory_iterator(const string& path)
+	explicit directory_iterator(const string& path)
 	: path_(path),
 	  path_info_(path, find_data_)
 	{
@@ -177,7 +180,7 @@ class directory_iterator {
 public:
 	class path_info {
 	public:
-		path_info(const string& path)
+		explicit path_info(const string& path)
 		: path_(path),
 		  entry_(NULL)
 		{
@@ -204,7 +207,7 @@ public:
 	{
 	}
 
-	directory_iterator(const string& path)
+	explicit directory_iterator(const string& path)
 	: path_(path),
 	  path_info_(path_),
 	  cur_entry_(0)
@@ -317,20 +320,38 @@ static char *path_specials(const string& sub)
 {
 	static bool env_init = false;
 	static char *env_shader_path;
-	static char *env_kernel_path;
+	static char *env_source_path;
 	if(!env_init) {
 		env_shader_path = getenv("CYCLES_SHADER_PATH");
-		env_kernel_path = getenv("CYCLES_KERNEL_PATH");
+		/* NOTE: It is KERNEL in env variable for compatibility reasons. */
+		env_source_path = getenv("CYCLES_KERNEL_PATH");
 		env_init = true;
 	}
 	if(env_shader_path != NULL && sub == "shader") {
 		return env_shader_path;
 	}
-	else if(env_shader_path != NULL && sub == "kernel") {
-		return env_kernel_path;
+	else if(env_shader_path != NULL && sub == "source") {
+		return env_source_path;
 	}
 	return NULL;
 }
+
+#if defined(__linux__) || defined(__APPLE__)
+static string path_xdg_cache_get()
+{
+	const char *home = getenv("XDG_CACHE_HOME");
+	if(home) {
+		return string(home);
+	}
+	else {
+		home = getenv("HOME");
+		if(home == NULL) {
+			home = getpwuid(getuid())->pw_dir;
+		}
+		return path_join(string(home), ".cache");
+	}
+}
+#endif
 
 void path_init(const string& path, const string& user_path)
 {
@@ -364,6 +385,24 @@ string path_user_get(const string& sub)
 
 	return path_join(cached_user_path, sub);
 }
+
+string path_cache_get(const string& sub)
+{
+#if defined(__linux__) || defined(__APPLE__)
+	if(cached_xdg_cache_path == "") {
+		cached_xdg_cache_path = path_xdg_cache_get();
+	}
+	string result = path_join(cached_xdg_cache_path, "cycles");
+	return path_join(result, sub);
+#else
+	/* TODO(sergey): What that should be on Windows? */
+	return path_user_get(path_join("cache", sub));
+#endif
+}
+
+#if defined(__linux__) || defined(__APPLE__)
+string path_xdg_home_get(const string& sub = "");
+#endif
 
 string path_filename(const string& path)
 {
@@ -486,9 +525,9 @@ static string path_unc_to_short(const string& path)
 		if((len > 5) && (path[5] ==  ':')) {
 			return path.substr(4, len - 4);
 		}
-		else if ((len > 7) &&
-		         (path.substr(4, 3) == "UNC") &&
-		         ((path[7] ==  DIR_SEP) || (path[7] ==  DIR_SEP_ALT)))
+		else if((len > 7) &&
+		        (path.substr(4, 3) == "UNC") &&
+		        ((path[7] ==  DIR_SEP) || (path[7] ==  DIR_SEP_ALT)))
 		{
 			return "\\\\" + path.substr(8, len - 8);
 		}
@@ -634,7 +673,12 @@ static bool create_directories_recursivey(const string& path)
 		}
 	}
 
+#ifdef _WIN32
+	wstring path_wc = string_to_wstring(path);
+	return _wmkdir(path_wc.c_str()) == 0;
+#else
 	return mkdir(path.c_str(), 0777) == 0;
+#endif
 }
 
 void path_create_directories(const string& filepath)
@@ -714,9 +758,9 @@ uint64_t path_modified_time(const string& path)
 {
 	path_stat_t st;
 	if(path_stat(path, &st) != 0) {
-		return st.st_mtime;
+		return 0;
 	}
-	return 0;
+	return st.st_mtime;
 }
 
 bool path_remove(const string& path)
@@ -724,36 +768,90 @@ bool path_remove(const string& path)
 	return remove(path.c_str()) == 0;
 }
 
-string path_source_replace_includes(const string& source_, const string& path)
+static string line_directive(const string& base, const string& path, int line)
 {
-	/* our own little c preprocessor that replaces #includes with the file
-	 * contents, to work around issue of opencl drivers not supporting
-	 * include paths with spaces in them */
-	string source = source_;
-	const string include = "#include \"";
-	size_t n, pos = 0;
+	string escaped_path = path;
+	/* First we make path relative. */
+	if(string_startswith(escaped_path, base.c_str())) {
+		const string base_file = path_filename(base);
+		const size_t base_len = base.length();
+		escaped_path = base_file + escaped_path.substr(base_len,
+		                                               escaped_path.length() - base_len);
+	}
+	/* Second, we replace all unsafe characters. */
+	string_replace(escaped_path, "\"", "\\\"");
+	string_replace(escaped_path, "\'", "\\\'");
+	string_replace(escaped_path, "\?", "\\\?");
+	string_replace(escaped_path, "\\", "\\\\");
+	return string_printf("#line %d \"%s\"", line, escaped_path.c_str());
+}
 
-	while((n = source.find(include, pos)) != string::npos) {
-		size_t n_start = n + include.size();
-		size_t n_end = source.find("\"", n_start);
-		string filename = source.substr(n_start, n_end - n_start);
+static string path_source_replace_includes_recursive(
+        const string& base,
+        const string& source,
+        const string& source_filepath)
+{
+	/* Our own little c preprocessor that replaces #includes with the file
+	 * contents, to work around issue of OpenCL drivers not supporting
+	 * include paths with spaces in them.
+	 */
 
-		string text, filepath = path_join(path, filename);
+	string result = "";
+	vector<string> lines;
+	string_split(lines, source, "\n", false);
 
-		if(path_read_text(filepath, text)) {
-			text = path_source_replace_includes(text, path_dirname(filepath));
-			source.replace(n, n_end + 1 - n, "\n" + text + "\n");
+	for(size_t i = 0; i < lines.size(); ++i) {
+		string line = lines[i];
+		if(line[0] == '#') {
+			string token = string_strip(line.substr(1, line.size() - 1));
+			if(string_startswith(token, "include")) {
+				token = string_strip(token.substr(7, token.size() - 7));
+				if(token[0] == '"') {
+					const size_t n_start = 1;
+					const size_t n_end = token.find("\"", n_start);
+					const string filename = token.substr(n_start, n_end - n_start);
+					string filepath = path_join(base, filename);
+					if(!path_exists(filepath)) {
+						filepath = path_join(path_dirname(source_filepath),
+						                     filename);
+					}
+					string text;
+					if(path_read_text(filepath, text)) {
+						text = path_source_replace_includes_recursive(
+						        base, text, filepath);
+						/* Use line directives for better error messages. */
+						line = line_directive(base, filepath, 1)
+						     + token.replace(0, n_end + 1, "\n" + text + "\n")
+						     + line_directive(base, source_filepath, i + 1);
+					}
+				}
+			}
 		}
-		else
-			pos = n_end;
+		result += line + "\n";
 	}
 
-	return source;
+	return result;
+}
+
+string path_source_replace_includes(const string& source,
+                                    const string& path,
+                                    const string& source_filename)
+{
+	return path_source_replace_includes_recursive(
+	        path,
+	        source,
+	        path_join(path, source_filename));
 }
 
 FILE *path_fopen(const string& path, const string& mode)
 {
+#ifdef _WIN32
+	wstring path_wc = string_to_wstring(path);
+	wstring mode_wc = string_to_wstring(mode);
+	return _wfopen(path_wc.c_str(), mode_wc.c_str());
+#else
 	return fopen(path.c_str(), mode.c_str());
+#endif
 }
 
 void path_cache_clear_except(const string& name, const set<string>& except)

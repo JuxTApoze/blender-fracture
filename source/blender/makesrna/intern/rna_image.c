@@ -62,6 +62,10 @@ static EnumPropertyItem image_source_items[] = {
 
 #ifdef RNA_RUNTIME
 
+#include "BKE_global.h"
+
+#include "GPU_draw.h"
+
 #include "IMB_imbuf.h"
 #include "IMB_imbuf_types.h"
 
@@ -399,7 +403,11 @@ static void rna_Image_pixels_set(PointerRNA *ptr, const float *values)
 				((unsigned char *)ibuf->rect)[i] = FTOCHAR(values[i]);
 		}
 
-		ibuf->userflags |= IB_BITMAPDIRTY | IB_DISPLAY_BUFFER_INVALID;
+		ibuf->userflags |= IB_BITMAPDIRTY | IB_DISPLAY_BUFFER_INVALID | IB_MIPMAP_INVALID;
+		if (!G.background) {
+			GPU_free_image(ima);
+		}
+		WM_main_add_notifier(NC_IMAGE | ND_DISPLAY, &ima->id);
 	}
 
 	BKE_image_release_ibuf(ima, ibuf, lock);
@@ -863,7 +871,7 @@ static void rna_def_image(BlenderRNA *brna)
 	prop = RNA_def_property(srna, "has_data", PROP_BOOLEAN, PROP_NONE);
 	RNA_def_property_boolean_funcs(prop, "rna_Image_has_data_get", NULL);
 	RNA_def_property_clear_flag(prop, PROP_EDITABLE);
-	RNA_def_property_ui_text(prop, "Has data", "True if this image has data");
+	RNA_def_property_ui_text(prop, "Has Data", "True if the image data is loaded into memory");
 
 	prop = RNA_def_property(srna, "depth", PROP_INT, PROP_UNSIGNED);
 	RNA_def_property_int_funcs(prop, "rna_Image_depth_get", NULL, NULL);

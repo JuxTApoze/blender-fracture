@@ -85,6 +85,8 @@ typedef enum ModifierType {
 	eModifierType_DataTransfer      = 49,
 	eModifierType_NormalEdit        = 50,
 	eModifierType_CorrectiveSmooth  = 51,
+	eModifierType_MeshSequenceCache = 52,
+	eModifierType_SurfaceDeform     = 53,
 	eModifierType_Fracture          = (1 << 20),
 	NUM_MODIFIER_TYPES
 } ModifierType;
@@ -97,7 +99,7 @@ typedef enum ModifierMode {
 	eModifierMode_Expanded          = (1 << 4),
 	eModifierMode_Virtual           = (1 << 5),
 	eModifierMode_ApplyOnSpline     = (1 << 6),
-	eModifierMode_DisableTemporary  = (1 << 31)
+	eModifierMode_DisableTemporary  = (1u << 31)
 } ModifierMode;
 
 typedef struct ModifierData {
@@ -276,6 +278,7 @@ typedef struct MirrorModifierData {
 	short axis  DNA_DEPRECATED; /* deprecated, use flag instead */
 	short flag;
 	float tolerance;
+	float uv_offset[2];
 	struct Object *mirror_ob;
 } MirrorModifierData;
 
@@ -383,7 +386,7 @@ typedef struct DisplaceModifierData {
 	int direction;
 	char defgrp_name[64];   /* MAX_VGROUP_NAME */
 	float midlevel;
-	int pad;
+	int space;
 } DisplaceModifierData;
 
 /* DisplaceModifierData->direction */
@@ -402,6 +405,12 @@ enum {
 	MOD_DISP_MAP_GLOBAL = 1,
 	MOD_DISP_MAP_OBJECT = 2,
 	MOD_DISP_MAP_UV     = 3,
+};
+
+/* DisplaceModifierData->space */
+enum {
+	MOD_DISP_SPACE_LOCAL  = 0,
+	MOD_DISP_SPACE_GLOBAL = 1,
 };
 
 typedef struct UVProjectModifierData {
@@ -621,6 +630,9 @@ typedef struct CollisionModifierData {
 	unsigned int mvert_num;
 	unsigned int tri_num;
 	float time_x, time_xnew;    /* cfra time of modifier */
+	char is_static;             /* collider doesn't move this frame, i.e. x[].co==xnew[].co */
+	char pad[7];
+
 	struct BVHTree *bvhtree;    /* bounding volume hierarchy for this cloth object */
 } CollisionModifierData;
 
@@ -642,8 +654,9 @@ typedef struct BooleanModifierData {
 
 	struct Object *object;
 	char operation;
-	char bm_flag, pad[2];
-	float threshold;
+	char solver;
+	char pad[2];
+	float double_threshold;
 } BooleanModifierData;
 
 typedef enum {
@@ -652,13 +665,10 @@ typedef enum {
 	eBooleanModifierOp_Difference = 2,
 } BooleanModifierOp;
 
-/* temp bm_flag (debugging only) */
-enum {
-	eBooleanModifierBMeshFlag_Enabled                   = (1 << 0),
-	eBooleanModifierBMeshFlag_BMesh_Separate            = (1 << 1),
-	eBooleanModifierBMeshFlag_BMesh_NoDissolve          = (1 << 2),
-	eBooleanModifierBMeshFlag_BMesh_NoConnectRegions    = (1 << 3),
-};
+typedef enum {
+	eBooleanModifierSolver_Carve    = 0,
+	eBooleanModifierSolver_BMesh = 1,
+} BooleanSolver;
 
 typedef struct MDefInfluence {
 	int vertex;
@@ -826,6 +836,8 @@ enum {
 	MOD_SHRINKWRAP_CULL_TARGET_BACKFACE  = (1 << 4),
 
 	MOD_SHRINKWRAP_KEEP_ABOVE_SURFACE    = (1 << 5),  /* distance is measure to the front face of the target */
+
+	MOD_SHRINKWRAP_INVERT_VGROUP         = (1 << 6),
 };
 
 /* Shrinkwrap->projAxis */
@@ -847,9 +859,16 @@ typedef struct SimpleDeformModifierData {
 
 	char mode;              /* deform function */
 	char axis;              /* lock axis (for taper and strech) */
-	char pad[2];
+	char flag;
+	char pad;
 
 } SimpleDeformModifierData;
+
+/* SimpleDeform->flag */
+enum {
+	MOD_SIMPLEDEFORM_FLAG_INVERT_VGROUP = (1 << 0),
+};
+
 
 enum {
 	MOD_SIMPLEDEFORM_MODE_TWIST   = 1,
@@ -906,9 +925,10 @@ typedef struct ScrewModifierData {
 	unsigned int iter;
 	float screw_ofs;
 	float angle;
-	char axis;
-	char pad;
+	float merge_dist;
 	short flag;
+	char axis;
+	char pad[5];
 } ScrewModifierData;
 
 enum {
@@ -919,6 +939,7 @@ enum {
 	MOD_SCREW_SMOOTH_SHADING = (1 << 5),
 	MOD_SCREW_UV_STRETCH_U   = (1 << 6),
 	MOD_SCREW_UV_STRETCH_V   = (1 << 7),
+	MOD_SCREW_MERGE          = (1 << 8),
 };
 
 typedef struct OceanModifierData {
@@ -1448,9 +1469,10 @@ typedef struct MeshIsland {
 	float thresh_weight, ground_weight;
 	int linear_index;  /* index in rigidbody world */
 	int particle_index;
+	int constraint_index;
 	int totcol; /*store number of used materials here, from the original object*/
 	int totdef; /*store number of used vertexgroups here, from the original object*/
-	char pad[4];
+	//char pad[4];
 } MeshIsland;
 
 
@@ -1541,6 +1563,12 @@ enum {
 	MOD_FRACTURE_KEEP_BOTH          = (1 << 0),
 	MOD_FRACTURE_KEEP_INTERSECT      = (1 << 1),
 	MOD_FRACTURE_KEEP_DIFFERENCE     = (1 << 2),
+};
+
+enum {
+	MOD_FRACTURE_NO_DYNAMIC_CONSTRAINTS     = (1 << 0),
+	MOD_FRACTURE_MIXED_DYNAMIC_CONSTRAINTS  = (1 << 1),
+	MOD_FRACTURE_ALL_DYNAMIC_CONSTRAINTS     = (1 << 2),
 };
 
 typedef struct ShardSequence {
@@ -1671,6 +1699,8 @@ typedef struct FractureModifierData {
 	MeshIslandSequence *current_mi_entry; /*analogous to current shard entry */
 	ListBase fracture_ids; /*volatile storage of shards being "hit" or fractured currently, needs to be cleaned up after usage! */
 	ListBase fracture_settings;
+	ListBase shared_verts; /* used for storing shared vertices for automerge */
+	ListBase pack_storage; /*used to store packed geometry when switching modes */
 
 	int active_setting;
 
@@ -1696,6 +1726,9 @@ typedef struct FractureModifierData {
 	int cutter_axis;
 	int cluster_constraint_type;
 	int fracture_mode;
+	int boolean_solver;
+	int dynamic_percentage;
+	int constraint_type;
 
 	float breaking_angle;
 	float breaking_distance;
@@ -1714,11 +1747,20 @@ typedef struct FractureModifierData {
 	float physics_mesh_scale;
 	float grease_offset;
 	float dynamic_force;
+	float deform_angle;
+	float deform_distance;
+	float cluster_deform_angle;
+	float cluster_deform_distance;
+	float deform_weakening;
 
 	float impulse_dampening;
 	float minimum_impulse;
 	float directional_factor;
 	float mass_threshold_factor;
+	float boolean_double_threshold;
+	float dynamic_min_size;
+	float inner_crease;
+	float orthogonality_factor;
 
 	/* flags */
 	int refresh;
@@ -1733,6 +1775,7 @@ typedef struct FractureModifierData {
 	int use_breaking;
 	int use_smooth;
 	int use_greasepencil_edges;
+	int use_constraint_collision;
 
 	int shards_to_islands;
 	int execute_threaded;
@@ -1745,16 +1788,24 @@ typedef struct FractureModifierData {
 	int constraint_target;
 	int limit_impact;
 	int fracture_all;
+	int dynamic_new_constraints;
+	int is_dynamic_external;
+	int keep_distort;
+	int do_merge;
+	int deform_angle_weighted;
+	int deform_distance_weighted;
 
 	/* internal flags */
 	int use_experimental;
 	int explo_shared;
 	int refresh_images;
 	int update_dynamic;
+	int distortion_cached;
 
 	/* internal values */
 	float max_vol;
 	int last_frame;
+	int constraint_island_count;
 
 	/*DANGER... what happens if the new compound object has more materials than fit into 1 short ? shouldnt happen but can...*/
 	/*so reserve an int here better */
@@ -1762,6 +1813,8 @@ typedef struct FractureModifierData {
 	int defstart;
 
 	int keep_cutter_shards;
+	short mat_ofs_intersect;
+	short mat_ofs_difference;
 
 	//char pad[4];
 } FractureModifierData;
@@ -1805,7 +1858,7 @@ enum {
 	MOD_DATATRANSFER_USE_VERT         = 1 << 28,
 	MOD_DATATRANSFER_USE_EDGE         = 1 << 29,
 	MOD_DATATRANSFER_USE_LOOP         = 1 << 30,
-	MOD_DATATRANSFER_USE_POLY         = 1 << 31,
+	MOD_DATATRANSFER_USE_POLY         = 1u << 31,
 };
 
 /* Set Split Normals modifier */
@@ -1818,7 +1871,9 @@ typedef struct NormalEditModifierData {
 	short mix_mode;
 	char pad[2];
 	float mix_factor;
+	float mix_limit;
 	float offset[3];
+	float pad_f1;
 } NormalEditModifierData;
 
 /* NormalEditModifierData.mode */
@@ -1840,5 +1895,67 @@ enum {
 	MOD_NORMALEDIT_MIX_SUB  = 2,
 	MOD_NORMALEDIT_MIX_MUL  = 3,
 };
+
+typedef struct MeshSeqCacheModifierData {
+	ModifierData modifier;
+
+	struct CacheFile *cache_file;
+	struct CacheReader *reader;
+	char object_path[1024];  /* 1024 = FILE_MAX */
+
+	char read_flag;
+	char pad[7];
+} MeshSeqCacheModifierData;
+
+/* MeshSeqCacheModifierData.read_flag */
+enum {
+	MOD_MESHSEQ_READ_VERT  = (1 << 0),
+	MOD_MESHSEQ_READ_POLY  = (1 << 1),
+	MOD_MESHSEQ_READ_UV    = (1 << 2),
+	MOD_MESHSEQ_READ_COLOR = (1 << 3),
+};
+
+typedef struct SDefBind {
+	unsigned int *vert_inds;
+	unsigned int numverts;
+	int mode;
+	float *vert_weights;
+	float normal_dist;
+	float influence;
+} SDefBind;
+
+typedef struct SDefVert {
+	SDefBind *binds;
+	unsigned int numbinds;
+	char pad[4];
+} SDefVert;
+
+typedef struct SurfaceDeformModifierData {
+	ModifierData modifier;
+
+	struct Object *target;	/* bind target object */
+	SDefVert *verts;		/* vertex bind data */
+	float falloff;
+	unsigned int numverts, numpoly;
+	int flags;
+	float mat[4][4];
+} SurfaceDeformModifierData;
+
+/* Surface Deform modifier flags */
+enum {
+	MOD_SDEF_BIND = (1 << 0),
+	MOD_SDEF_USES_LOOPTRI = (1 << 1),
+	MOD_SDEF_HAS_CONCAVE = (1 << 2),
+};
+
+/* Surface Deform vertex bind modes */
+enum {
+	MOD_SDEF_MODE_LOOPTRI = 0,
+	MOD_SDEF_MODE_NGON = 1,
+	MOD_SDEF_MODE_CENTROID = 2,
+};
+
+#define MOD_MESHSEQ_READ_ALL \
+	(MOD_MESHSEQ_READ_VERT | MOD_MESHSEQ_READ_POLY | MOD_MESHSEQ_READ_UV | MOD_MESHSEQ_READ_COLOR)
 
 #endif  /* __DNA_MODIFIER_TYPES_H__ */

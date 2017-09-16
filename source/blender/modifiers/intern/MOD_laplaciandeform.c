@@ -339,7 +339,6 @@ static void rotateDifferentialCoordinates(LaplacianSystem *sys)
 		pi[1] = EIG_linear_solver_variable_get(sys->context, 1, i);
 		pi[2] = EIG_linear_solver_variable_get(sys->context, 2, i);
 		zero_v3(ni);
-		num_fni = 0;
 		num_fni = sys->ringf_map[i].count;
 		for (fi = 0; fi < num_fni; fi++) {
 			const unsigned int *vin;
@@ -540,7 +539,7 @@ static void initSystem(LaplacianDeformModifierData *lmd, Object *ob, DerivedMesh
 				STACK_PUSH(index_anchors, i);
 			}
 		}
-		DM_ensure_looptri(dm);
+
 		total_anchors = STACK_SIZE(index_anchors);
 		lmd->cache_system = initLaplacianSystem(numVerts, dm->getNumEdges(dm), dm->getNumLoopTri(dm),
 		                                       total_anchors, lmd->anchor_grp_name, lmd->repeat);

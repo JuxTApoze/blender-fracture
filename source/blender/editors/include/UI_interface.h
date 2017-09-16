@@ -62,6 +62,7 @@ struct uiFontStyle;
 struct uiWidgetColors;
 struct Image;
 struct ImageUser;
+struct wmKeyConfig;
 struct wmOperatorType;
 struct uiWidgetColors;
 struct MTex;
@@ -160,13 +161,13 @@ enum {
 	UI_BUT_NODE_LINK       = (1 << 8),
 	UI_BUT_NODE_ACTIVE     = (1 << 9),
 	UI_BUT_DRAG_LOCK       = (1 << 10),
-	UI_BUT_DISABLED        = (1 << 11),
+	UI_BUT_DISABLED        = (1 << 11),  /* grayed out and uneditable */
 	UI_BUT_COLOR_LOCK      = (1 << 12),
 	UI_BUT_ANIMATED        = (1 << 13),
 	UI_BUT_ANIMATED_KEY    = (1 << 14),
 	UI_BUT_DRIVEN          = (1 << 15),
 	UI_BUT_REDALERT        = (1 << 16),
-	UI_BUT_INACTIVE        = (1 << 17),
+	UI_BUT_INACTIVE        = (1 << 17),  /* grayed out but still editable */
 	UI_BUT_LAST_ACTIVE     = (1 << 18),
 	UI_BUT_UNDO            = (1 << 19),
 	UI_BUT_IMMEDIATE       = (1 << 20),
@@ -178,10 +179,9 @@ enum {
 	UI_BUT_DRAG_MULTI      = (1 << 25),  /* edit this button as well as the active button (not just dragging) */
 	UI_BUT_SCA_LINK_GREY   = (1 << 26),  /* used to flag if sca links shoud be gray out */
 	UI_BUT_HAS_SEP_CHAR    = (1 << 27),  /* but->str contains UI_SEP_CHAR, used for key shortcuts */
-	UI_BUT_TIP_FORCE       = (1 << 28),  /* force show tooltips when holding option/alt if U's USER_TOOLTIPS is off */
+	UI_BUT_UPDATE_DELAY    = (1 << 28),  /* don't run updates while dragging (needed in rare cases). */
 	UI_BUT_TEXTEDIT_UPDATE = (1 << 29),  /* when widget is in textedit mode, update value on each char stroke */
-	UI_BUT_SEARCH_UNLINK   = (1 << 30),  /* show unlink for search button */
-	UI_BUT_UPDATE_DELAY    = (1 << 31),  /* don't run updates while dragging (needed in rare cases). */
+	UI_BUT_VALUE_CLEAR     = (1 << 30),  /* show 'x' icon to clear/unlink value of text or search button */
 };
 
 #define UI_PANEL_WIDTH          340
@@ -212,12 +212,13 @@ enum {
 	UI_BUT_ALIGN_STITCH_TOP  = (1 << 18),
 	UI_BUT_ALIGN_STITCH_LEFT = (1 << 19),
 	UI_BUT_ALIGN_ALL         = (UI_BUT_ALIGN | UI_BUT_ALIGN_STITCH_TOP | UI_BUT_ALIGN_STITCH_LEFT),
+
+	UI_BUT_BOX_ITEM          = (1 << 20), /* This but is "inside" a box item (currently used to change theme colors). */
 };
 
 /* scale fixed button widths by this to account for DPI */
 
 #define UI_DPI_FAC ((U.pixelsize * (float)U.dpi) / 72.0f)
-#define UI_DPI_WINDOW_FAC (((float)U.dpi) / 72.0f)
 /* 16 to copy ICON_DEFAULT_HEIGHT */
 #define UI_DPI_ICON_SIZE ((float)16 * UI_DPI_FAC)
 
@@ -354,6 +355,7 @@ typedef void (*uiButHandleFunc)(struct bContext *C, void *arg1, void *arg2);
 typedef void (*uiButHandleRenameFunc)(struct bContext *C, void *arg, char *origstr);
 typedef void (*uiButHandleNFunc)(struct bContext *C, void *argN, void *arg2);
 typedef int (*uiButCompleteFunc)(struct bContext *C, char *str, void *arg);
+typedef struct ARegion *(*uiButSearchCreateFunc)(struct bContext *C, struct ARegion *butregion, uiBut *but);
 typedef void (*uiButSearchFunc)(const struct bContext *C, void *arg, const char *str, uiSearchItems *items);
 /* Must return allocated string. */
 typedef char *(*uiButToolTipFunc)(struct bContext *C, void *argN, const char *tip);
@@ -381,12 +383,18 @@ typedef bool (*uiMenuStepFunc)(struct bContext *C, int direction, void *arg1);
 
 typedef struct uiPopupMenu uiPopupMenu;
 
-struct uiPopupMenu *UI_popup_menu_begin(struct bContext *C, const char *title, int icon) ATTR_NONNULL();
+uiPopupMenu *UI_popup_menu_begin(
+        struct bContext *C, const char *title, int icon) ATTR_NONNULL();
+uiPopupMenu *UI_popup_menu_begin_ex(
+        struct bContext *C, const char *title, const char *block_name,
+        int icon) ATTR_NONNULL();
 void UI_popup_menu_end(struct bContext *C, struct uiPopupMenu *head);
 struct uiLayout *UI_popup_menu_layout(uiPopupMenu *head);
 
 void UI_popup_menu_reports(struct bContext *C, struct ReportList *reports) ATTR_NONNULL();
 int UI_popup_menu_invoke(struct bContext *C, const char *idname, struct ReportList *reports) ATTR_NONNULL(1, 2);
+
+void UI_popup_menu_retval_set(const uiBlock *block, const int retval, const bool enable);
 
 /* Pie menus */
 typedef struct uiPieMenu uiPieMenu;
@@ -414,7 +422,7 @@ typedef void (*uiBlockCancelFunc)(struct bContext *C, void *arg1);
 
 void UI_popup_block_invoke(struct bContext *C, uiBlockCreateFunc func, void *arg);
 void UI_popup_block_invoke_ex(struct bContext *C, uiBlockCreateFunc func, void *arg, const char *opname, int opcontext);
-void UI_popup_block_ex(struct bContext *C, uiBlockCreateFunc func, uiBlockHandleFunc popup_func, uiBlockCancelFunc cancel_func, void *arg);
+void UI_popup_block_ex(struct bContext *C, uiBlockCreateFunc func, uiBlockHandleFunc popup_func, uiBlockCancelFunc cancel_func, void *arg, struct wmOperator *op);
 /* void uiPupBlockOperator(struct bContext *C, uiBlockCreateFunc func, struct wmOperator *op, int opcontext); */ /* UNUSED */
 
 void UI_popup_block_close(struct bContext *C, struct wmWindow *win, uiBlock *block);
@@ -494,6 +502,7 @@ bool    UI_but_active_drop_color(struct bContext *C);
 
 void    UI_but_flag_enable(uiBut *but, int flag);
 void    UI_but_flag_disable(uiBut *but, int flag);
+bool    UI_but_flag_is_set(uiBut *but, int flag);
 
 void    UI_but_drawflag_enable(uiBut *but, int flag);
 void    UI_but_drawflag_disable(uiBut *but, int flag);
@@ -680,7 +689,9 @@ uiBut *UI_block_links_find_inlink(uiBlock *block, void *poin);
 /* use inside searchfunc to add items */
 bool    UI_search_item_add(uiSearchItems *items, const char *name, void *poin, int iconid);
 /* bfunc gets search item *poin as arg2, or if NULL the old string */
-void    UI_but_func_search_set(uiBut *but,        uiButSearchFunc sfunc, void *arg1, uiButHandleFunc bfunc, void *active);
+void    UI_but_func_search_set(
+        uiBut *but, uiButSearchCreateFunc cfunc, uiButSearchFunc sfunc,
+        void *arg1, uiButHandleFunc bfunc, void *active);
 /* height in pixels, it's using hardcoded values still */
 int     UI_searchbox_size_y(void);
 int     UI_searchbox_size_x(void);
@@ -937,6 +948,7 @@ void uiTemplateReportsBanner(uiLayout *layout, struct bContext *C);
 void uiTemplateKeymapItemProperties(uiLayout *layout, struct PointerRNA *ptr);
 void uiTemplateComponentMenu(uiLayout *layout, struct PointerRNA *ptr, const char *propname, const char *name);
 void uiTemplateNodeSocket(uiLayout *layout, struct bContext *C, float *color);
+void uiTemplateCacheFile(uiLayout *layout, struct bContext *C, struct PointerRNA *ptr, const char *propname);
 
 /* Default UIList class name, keep in sync with its declaration in bl_ui/__init__.py */
 #define UI_UL_DEFAULT_CLASS_NAME "UI_UL_list"
@@ -1004,7 +1016,9 @@ typedef struct uiDragColorHandle {
 	bool gamma_corrected;
 } uiDragColorHandle;
 
-void ED_button_operatortypes(void);
+void ED_operatortypes_ui(void);
+void ED_keymap_ui(struct wmKeyConfig *keyconf);
+
 void UI_drop_color_copy(struct wmDrag *drag, struct wmDropBox *drop);
 int UI_drop_color_poll(struct bContext *C, struct wmDrag *drag, const struct wmEvent *event);
 
@@ -1014,12 +1028,18 @@ bool UI_context_copy_to_selected_list(
 
 /* Helpers for Operators */
 uiBut *UI_context_active_but_get(const struct bContext *C);
-void UI_context_active_but_prop_get(const struct bContext *C, struct PointerRNA *ptr, struct PropertyRNA **prop, int *index);
+uiBut *UI_context_active_but_prop_get(
+        const struct bContext *C,
+        struct PointerRNA *r_ptr, struct PropertyRNA **r_prop, int *r_index);
 void UI_context_active_but_prop_handle(struct bContext *C);
 struct wmOperator *UI_context_active_operator_get(const struct bContext *C);
 void UI_context_update_anim_flag(const struct bContext *C);
-void UI_context_active_but_prop_get_filebrowser(const struct bContext *C, struct PointerRNA *r_ptr, struct PropertyRNA **r_prop, bool *r_is_undo);
-void UI_context_active_but_prop_get_templateID(struct bContext *C, struct PointerRNA *ptr, struct PropertyRNA **prop);
+void UI_context_active_but_prop_get_filebrowser(
+        const struct bContext *C,
+        struct PointerRNA *r_ptr, struct PropertyRNA **r_prop, bool *r_is_undo);
+void UI_context_active_but_prop_get_templateID(
+        struct bContext *C,
+        struct PointerRNA *r_ptr, struct PropertyRNA **r_prop);
 
 /* Styled text draw */
 void UI_fontstyle_set(const struct uiFontStyle *fs);
@@ -1064,7 +1084,7 @@ void UI_butstore_unregister(uiButStore *bs_handle, uiBut **but_p);
 
 
 /* Float precision helpers */
-#define UI_PRECISION_FLOAT_MAX 7
+#define UI_PRECISION_FLOAT_MAX 6
 /* For float buttons the 'step' (or a1), is scaled */
 #define UI_PRECISION_FLOAT_SCALE 0.01f
 

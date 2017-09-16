@@ -28,6 +28,7 @@
  *  \ingroup spnode
  */
 
+#include "DNA_gpencil_types.h"
 #include "DNA_lamp_types.h"
 #include "DNA_material_types.h"
 #include "DNA_node_types.h"
@@ -752,6 +753,10 @@ static void node_region_listener(bScreen *UNUSED(sc), ScrArea *UNUSED(sa), ARegi
 					break;
 			}
 			break;
+		case NC_WM:
+			if (wmn->data == ND_JOB)
+				ED_region_tag_redraw(ar);
+			break;
 		case NC_SCENE:
 		case NC_MATERIAL:
 		case NC_TEXTURE:
@@ -821,6 +826,77 @@ static int node_context(const bContext *C, const char *member, bContextDataResul
 	return 0;
 }
 
+static void node_id_remap(ScrArea *UNUSED(sa), SpaceLink *slink, ID *old_id, ID *new_id)
+{
+	SpaceNode *snode = (SpaceNode *)slink;
+
+	if (GS(old_id->name) == ID_SCE) {
+		if (snode->id == old_id) {
+			/* nasty DNA logic for SpaceNode:
+			 * ideally should be handled by editor code, but would be bad level call
+			 */
+			BLI_freelistN(&snode->treepath);
+
+			/* XXX Untested in case new_id != NULL... */
+			snode->id = new_id;
+			snode->from = NULL;
+			snode->nodetree = NULL;
+			snode->edittree = NULL;
+		}
+	}
+	else if (GS(old_id->name) == ID_OB) {
+		if (snode->from == old_id) {
+			if (new_id == NULL) {
+				snode->flag &= ~SNODE_PIN;
+			}
+			snode->from = new_id;
+		}
+	}
+	else if (GS(old_id->name) == ID_GD) {
+		if ((ID *)snode->gpd == old_id) {
+			snode->gpd = (bGPdata *)new_id;
+			id_us_min(old_id);
+			id_us_plus(new_id);
+		}
+	}
+	else if (GS(old_id->name) == ID_NT) {
+		bNodeTreePath *path, *path_next;
+
+		for (path = snode->treepath.first; path; path = path->next) {
+			if ((ID *)path->nodetree == old_id) {
+				path->nodetree = (bNodeTree *)new_id;
+				id_us_min(old_id);
+				id_us_plus(new_id);
+			}
+			if (path == snode->treepath.first) {
+				/* first nodetree in path is same as snode->nodetree */
+				snode->nodetree = path->nodetree;
+			}
+			if (path->nodetree == NULL) {
+				break;
+			}
+		}
+
+		/* remaining path entries are invalid, remove */
+		for (; path; path = path_next) {
+			path_next = path->next;
+
+			BLI_remlink(&snode->treepath, path);
+			MEM_freeN(path);
+		}
+
+		/* edittree is just the last in the path,
+		 * set this directly since the path may have been shortened above */
+		if (snode->treepath.last) {
+			path = snode->treepath.last;
+			snode->edittree = path->nodetree;
+		}
+		else {
+			snode->edittree = NULL;
+		}
+	}
+}
+
 /* only called once, from space/spacetypes.c */
 void ED_spacetype_node(void)
 {
@@ -840,6 +916,7 @@ void ED_spacetype_node(void)
 	st->refresh = node_area_refresh;
 	st->context = node_context;
 	st->dropboxes = node_dropboxes;
+	st->id_remap = node_id_remap;
 
 	/* regions: main window */
 	art = MEM_callocN(sizeof(ARegionType), "spacetype node region");

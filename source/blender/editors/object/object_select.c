@@ -45,6 +45,7 @@
 #include "BLI_math.h"
 #include "BLI_listbase.h"
 #include "BLI_rand.h"
+#include "BLI_string_utils.h"
 #include "BLI_utildefines.h"
 
 #include "BLT_translation.h"
@@ -577,7 +578,6 @@ static bool select_grouped_parent(bContext *C) /* Makes parent active and de-sel
 
 	/* can be NULL if parent in other scene */
 	if (baspar && BASE_SELECTABLE(v3d, baspar)) {
-		ED_base_object_select(basact, BA_DESELECT);
 		ED_base_object_select(baspar, BA_SELECT);
 		ED_base_object_activate(C, baspar);
 		changed = true;
@@ -1132,7 +1132,7 @@ static int object_select_mirror_exec(bContext *C, wmOperator *op)
 	{
 		char name_flip[MAXBONENAME];
 
-		BKE_deform_flip_side_name(name_flip, primbase->object->id.name + 2, true);
+		BLI_string_flip_side_name(name_flip, primbase->object->id.name + 2, true, sizeof(name_flip));
 		
 		if (!STREQ(name_flip, primbase->object->id.name + 2)) {
 			Object *ob = (Object *)BKE_libblock_find_name(ID_OB, name_flip);

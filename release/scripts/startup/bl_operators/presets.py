@@ -135,7 +135,7 @@ class AddPresetBase:
 
                             file_preset.write("%s = %r\n" % (rna_path_step, value))
 
-                    file_preset = open(filepath, 'w')
+                    file_preset = open(filepath, 'w', encoding="utf-8")
                     file_preset.write("import bpy\n")
 
                     if hasattr(self, "preset_defines"):
@@ -677,7 +677,28 @@ class AddPresetFracture(AddPresetBase, Operator):
         "fracture.minimum_impulse",
         "fracture.mass_threshold_factor",
         "fracture.autohide_filter_group",
-        "fracture.uv_layer"
+        "fracture.uv_layer",
+        "fracture.boolean_solver",
+        "fracture.boolean_double_threshold",
+        "fracture.dynamic_percentage",
+        "fracture.dynamic_new_constraints",
+        "fracture.dynamic_min_size",
+        "fracture.use_constraint_collision",
+        "fracture.inner_crease",
+        "fracture.material_offset_difference",
+        "fracture.material_offset_intersect",
+        "fracture.orthogonality_factor",
+        "fracture.keep_distort",
+        "fracture.do_merge",
+        "fracture.constraint_type",
+        "fracture.automerge_dist",
+        "fracture.deform_distance",
+        "fracture.deform_distance_weighted",
+        "fracture.cluster_deform_distance",
+        "fracture.deform_angle",
+        "fracture.deform_angle_weighted",
+        "fracture.cluster_deform_angle",
+        "fracture.deform_weakening"
     ]
 
     preset_subdir = "fracture"
@@ -745,3 +766,45 @@ class WM_MT_operator_presets(Menu):
         return AddPresetOperator.operator_path(self.operator)
 
     preset_operator = "script.execute_preset"
+
+
+class AddPresetUnitsLength(AddPresetBase, Operator):
+    """Add or remove length units preset"""
+    bl_idname = "scene.units_length_preset_add"
+    bl_label = "Add Length Units Preset"
+    preset_menu = "SCENE_MT_units_length_presets"
+
+    preset_defines = [
+        "scene = bpy.context.scene"
+    ]
+
+    preset_values = [
+        "scene.unit_settings.system",
+        "scene.unit_settings.scale_length",
+    ]
+
+    preset_subdir = "units_length"
+
+
+classes = (
+    AddPresetCamera,
+    AddPresetCloth,
+    AddPresetFluid,
+    AddPresetFracture,
+    AddPresetHairDynamics,
+    AddPresetInteraction,
+    AddPresetInterfaceTheme,
+    AddPresetKeyconfig,
+    AddPresetNodeColor,
+    AddPresetOperator,
+    AddPresetRender,
+    AddPresetSSS,
+    AddPresetSafeAreas,
+    AddPresetSunSky,
+    AddPresetTrackingCamera,
+    AddPresetTrackingSettings,
+    AddPresetTrackingTrackColor,
+    AddPresetUnitsLength,
+    ExecutePreset,
+    WM_MT_operator_presets,
+)

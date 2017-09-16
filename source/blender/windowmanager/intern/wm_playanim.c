@@ -897,6 +897,7 @@ static int ghost_event_proc(GHOST_EventHandle evt, GHOST_TUserDataPtr ps_void)
 					}
 					break;
 				case GHOST_kKeyEqual:
+				case GHOST_kKeyPlus:
 				case GHOST_kKeyNumpadPlus:
 				{
 					if (val == 0) break;
@@ -1255,7 +1256,7 @@ static char *wm_main_playanim_intern(int argc, const char **argv)
 	//GHOST_ActivateWindowDrawingContext(g_WS.ghost_window);
 
 	/* initialize the font */
-	BLF_init(11, 72);
+	BLF_init();
 	ps.fontid = BLF_load_mem("monospace", (unsigned char *)datatoc_bmonofont_ttf, datatoc_bmonofont_ttf_size);
 	BLF_size(ps.fontid, 11, 72);
 
@@ -1427,8 +1428,7 @@ static char *wm_main_playanim_intern(int argc, const char **argv)
 
 			ps.next_frame = ps.direction;
 
-
-			while ((hasevent = GHOST_ProcessEvents(g_WS.ghost_system, 0)) || ps.wait2) {
+			while ((hasevent = GHOST_ProcessEvents(g_WS.ghost_system, ps.wait2))) {
 				if (hasevent) {
 					GHOST_DispatchEvents(g_WS.ghost_system);
 				}

@@ -37,6 +37,7 @@
 
 #include "BLI_blenlib.h"
 #include "BLI_utildefines.h"
+#include "BLI_string_utils.h"
 
 #include "DNA_anim_types.h"
 #include "DNA_object_types.h"
@@ -51,6 +52,7 @@
 #include "BKE_deform.h"
 
 #include "RNA_access.h"
+#include "RNA_enum_types.h"
 
 #include "ED_anim_api.h"
 #include "ED_keyframing.h"
@@ -203,7 +205,7 @@ void clean_fcurve(struct bAnimContext *ac, bAnimListElem *ale, float thresh, boo
 	
 	/* now insert first keyframe, as it should be ok */
 	bezt = old_bezts;
-	insert_vert_fcurve(fcu, bezt->vec[1][0], bezt->vec[1][1], 0);
+	insert_vert_fcurve(fcu, bezt->vec[1][0], bezt->vec[1][1], BEZKEYTYPE(bezt), 0);
 	if (!(bezt->f2 & SELECT)) {
 		lastb = fcu->bezt;
 		lastb->f1 = lastb->f2 = lastb->f3 = 0;
@@ -226,13 +228,13 @@ void clean_fcurve(struct bAnimContext *ac, bAnimListElem *ale, float thresh, boo
 		}
 		lastb = (fcu->bezt + (fcu->totvert - 1));
 		bezt = (old_bezts + i);
-
+		
 		/* get references for quicker access */
 		prev[0] = lastb->vec[1][0]; prev[1] = lastb->vec[1][1];
 		cur[0] = bezt->vec[1][0]; cur[1] = bezt->vec[1][1];
-
+		
 		if (!(bezt->f2 & SELECT)) {
-			insert_vert_fcurve(fcu, cur[0], cur[1], 0);
+			insert_vert_fcurve(fcu, cur[0], cur[1], BEZKEYTYPE(bezt), 0);
 			lastb = (fcu->bezt + (fcu->totvert - 1));
 			lastb->f1 = lastb->f2 = lastb->f3 = 0;
 			continue;
@@ -251,7 +253,7 @@ void clean_fcurve(struct bAnimContext *ac, bAnimListElem *ale, float thresh, boo
 				if (cur[1] > next[1]) {
 					if (IS_EQT(cur[1], prev[1], thresh) == 0) {
 						/* add new keyframe */
-						insert_vert_fcurve(fcu, cur[0], cur[1], 0);
+						insert_vert_fcurve(fcu, cur[0], cur[1], BEZKEYTYPE(bezt), 0);
 					}
 				}
 			}
@@ -259,7 +261,7 @@ void clean_fcurve(struct bAnimContext *ac, bAnimListElem *ale, float thresh, boo
 				/* only add if values are a considerable distance apart */
 				if (IS_EQT(cur[1], prev[1], thresh) == 0) {
 					/* add new keyframe */
-					insert_vert_fcurve(fcu, cur[0], cur[1], 0);
+					insert_vert_fcurve(fcu, cur[0], cur[1], BEZKEYTYPE(bezt), 0);
 				}
 			}
 		}
@@ -269,18 +271,18 @@ void clean_fcurve(struct bAnimContext *ac, bAnimListElem *ale, float thresh, boo
 				/* does current have same value as previous and next? */
 				if (IS_EQT(cur[1], prev[1], thresh) == 0) {
 					/* add new keyframe*/
-					insert_vert_fcurve(fcu, cur[0], cur[1], 0);
+					insert_vert_fcurve(fcu, cur[0], cur[1], BEZKEYTYPE(bezt), 0);
 				}
 				else if (IS_EQT(cur[1], next[1], thresh) == 0) {
 					/* add new keyframe */
-					insert_vert_fcurve(fcu, cur[0], cur[1], 0);
+					insert_vert_fcurve(fcu, cur[0], cur[1], BEZKEYTYPE(bezt), 0);
 				}
 			}
 			else {
 				/* add if value doesn't equal that of previous */
 				if (IS_EQT(cur[1], prev[1], thresh) == 0) {
 					/* add new keyframe */
-					insert_vert_fcurve(fcu, cur[0], cur[1], 0);
+					insert_vert_fcurve(fcu, cur[0], cur[1], BEZKEYTYPE(bezt), 0);
 				}
 			}
 		}
@@ -436,7 +438,7 @@ void sample_fcurve(FCurve *fcu)
 	BezTriple *bezt, *start = NULL, *end = NULL;
 	TempFrameValCache *value_cache, *fp;
 	int sfra, range;
-	int i, n, nIndex;
+	int i, n;
 
 	if (fcu->bezt == NULL) /* ignore baked */
 		return;
@@ -467,8 +469,7 @@ void sample_fcurve(FCurve *fcu)
 					
 					/* add keyframes with these, tagging as 'breakdowns' */
 					for (n = 1, fp = value_cache; n < range && fp; n++, fp++) {
-						nIndex = insert_vert_fcurve(fcu, fp->frame, fp->val, 1);
-						BEZKEYTYPE(fcu->bezt + nIndex) = BEZT_KEYTYPE_BREAKDOWN;
+						insert_vert_fcurve(fcu, fp->frame, fp->val, BEZT_KEYTYPE_BREAKDOWN, 1);
 					}
 					
 					/* free temp cache */
@@ -528,8 +529,7 @@ typedef struct tAnimCopybufItem {
 
 
 /* This function frees any MEM_calloc'ed copy/paste buffer data */
-// XXX find some header to put this in!
-void free_anim_copybuf(void)
+void ANIM_fcurves_copybuf_free(void)
 {
 	tAnimCopybufItem *aci, *acn;
 	
@@ -564,7 +564,7 @@ short copy_animedit_keys(bAnimContext *ac, ListBase *anim_data)
 	Scene *scene = ac->scene;
 	
 	/* clear buffer first */
-	free_anim_copybuf();
+	ANIM_fcurves_copybuf_free();
 	
 	/* assume that each of these is an F-Curve */
 	for (ale = anim_data->first; ale; ale = ale->next) {
@@ -669,7 +669,7 @@ static void flip_names(tAnimCopybufItem *aci, char **name) {
 
 			/* more ninja stuff, temporary substitute with NULL terminator */
 			str_start[length] = 0;
-			BKE_deform_flip_side_name(bname_new, str_start, false);
+			BLI_string_flip_side_name(bname_new, str_start, false, sizeof(bname_new));
 			str_start[length] = '\"';
 
 			str_iter = *name = MEM_mallocN(sizeof(char) * (prefix_l + postfix_l + length + 1), "flipped_path");

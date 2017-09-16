@@ -21,20 +21,27 @@
  * ***** END GPL LICENSE BLOCK *****
  */
 
-#ifdef WITH_INPUT_NDOF
-
 #include "GHOST_NDOFManagerUnix.h"
 #include "GHOST_System.h"
 
 #include <spnav.h>
 #include <stdio.h>
+#include <unistd.h>
 
+#define SPNAV_SOCK_PATH "/var/run/spnav.sock"
 
 GHOST_NDOFManagerUnix::GHOST_NDOFManagerUnix(GHOST_System& sys)
     : GHOST_NDOFManager(sys),
       m_available(false)
 {
-	if (spnav_open() != -1) {
+	if (access(SPNAV_SOCK_PATH, F_OK) != 0) {
+#ifdef DEBUG
+		/* annoying for official builds, just adds noise and most people don't own these */
+		puts("ndof: spacenavd not found");
+		/* This isn't a hard error, just means the user doesn't have a 3D mouse. */
+#endif
+	}
+	else if (spnav_open() != -1) {
 		m_available = true;
 
 		/* determine exactly which device (if any) is plugged in */
@@ -54,13 +61,6 @@ GHOST_NDOFManagerUnix::GHOST_NDOFManagerUnix(GHOST_System& sys)
 			}
 			pclose(command_output);
 		}
-	}
-	else {
-#ifdef DEBUG
-		/* annoying for official builds, just adds noise and most people don't own these */
-		puts("ndof: spacenavd not found");
-		/* This isn't a hard error, just means the user doesn't have a 3D mouse. */
-#endif
 	}
 }
 
@@ -107,8 +107,8 @@ bool GHOST_NDOFManagerUnix::processEvents()
 				{
 					/* convert to blender view coords */
 					GHOST_TUns64 now = m_system.getMilliSeconds();
-					const short t[3] = {(short)e.motion.x, (short)e.motion.y, (short)-e.motion.z};
-					const short r[3] = {(short)-e.motion.rx, (short)-e.motion.ry, (short)e.motion.rz};
+					const int t[3] = {(int)e.motion.x, (int)e.motion.y, (int)-e.motion.z};
+					const int r[3] = {(int)-e.motion.rx, (int)-e.motion.ry, (int)e.motion.rz};
 
 					updateTranslation(t, now);
 					updateRotation(r, now);
@@ -128,7 +128,7 @@ bool GHOST_NDOFManagerUnix::processEvents()
 #ifdef USE_FINISH_GLITCH_WORKAROUND
 		if (motion_test_prev == true && motion_test == false) {
 			GHOST_TUns64 now = m_system.getMilliSeconds();
-			const short v[3] = {0, 0, 0};
+			const int v[3] = {0, 0, 0};
 
 			updateTranslation(v, now);
 			updateRotation(v, now);
@@ -142,5 +142,3 @@ bool GHOST_NDOFManagerUnix::processEvents()
 
 	return anyProcessed;
 }
-
-#endif /* WITH_INPUT_NDOF */

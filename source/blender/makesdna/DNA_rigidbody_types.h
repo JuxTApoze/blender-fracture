@@ -46,7 +46,7 @@ struct EffectorWeights;
  *
  * Represents a "simulation scene" existing within the parent scene.
  */
-typedef struct RigidBodyOb RigidBodyOb;
+struct RigidBodyOb;
 
 typedef struct RigidBodyWorld {
 	/* Sim World Settings ------------------------------------------------------------- */
@@ -73,7 +73,7 @@ typedef struct RigidBodyWorld {
 	
 	/* References to Physics Sim objects. Exist at runtime only ---------------------- */
 	void *physics_world;		/* Physics sim world (i.e. btDiscreteDynamicsWorld) */
-	RigidBodyOb **cache_index_map;		/* Maps the linear RigidbodyOb index to the nested Object(Modifier) Index, at runtime*/
+	struct RigidBodyOb **cache_index_map;		/* Maps the linear RigidbodyOb index to the nested Object(Modifier) Index, at runtime*/
 	int *cache_offset_map;		/* Maps the linear RigidbodyOb index to the nested Object(Modifier) cell offset, at runtime, so it does not need to be calced in cache*/
 	float internal_tick;		/* this is the current ? internal bullet time step, clumsy to put here but cannot expose custom callback parameters */
 	char pad2[4];
@@ -119,7 +119,7 @@ typedef struct RigidBodyOb {
 	int col_groups;			/* Collision groups that determines wich rigid bodies can collide with each other */
 	int meshisland_index;	/* determines "offset" inside an objects meshisland list, -1 for regular rigidbodies */
 	short mesh_source;		/* (eRigidBody_MeshSource) mesh source for mesh based collision shapes */
-	short pad;
+	short is_fractured;
 	char pad2[4];
 	
 	/* Physics Parameters */
@@ -179,6 +179,17 @@ typedef enum eRigidBodyOb_Flag {
 	RBO_FLAG_IS_GHOST = (1 << 10),
 	/* trigger flag, trigger kinematic state change on other objects */
 	RBO_FLAG_IS_TRIGGER = (1 << 11),
+	/* propagate trigger flag, pass the trigger impulse through to other objects nearby / touched */
+	RBO_FLAG_PROPAGATE_TRIGGER = (1 << 12),
+	/* dissolve constraints on activated shards */
+	RBO_FLAG_CONSTRAINT_DISSOLVE = (1 << 13),
+	/* trigger a dynamic fracture with this type */
+	RBO_FLAG_DYNAMIC_TRIGGER = (1 << 14),
+	/* dissolve plastic constraints too (if any) */
+	RBO_FLAG_PLASTIC_DISSOLVE = (1 << 15),
+	/* anti (stop) trigger flag, make simulated objects kinematic again */
+	RBO_FLAG_ANTI_TRIGGER = (1 << 16),
+
 } eRigidBodyOb_Flag;
 
 /* RigidBody Collision Shape */
@@ -253,10 +264,16 @@ typedef struct RigidBodyCon {
 	float spring_stiffness_x;
 	float spring_stiffness_y;
 	float spring_stiffness_z;
+	float spring_stiffness_ang_x;
+	float spring_stiffness_ang_y;
+	float spring_stiffness_ang_z;
 	/* amount of velocity lost over time */
 	float spring_damping_x;
 	float spring_damping_y;
 	float spring_damping_z;
+	float spring_damping_ang_x;
+	float spring_damping_ang_y;
+	float spring_damping_ang_z;
 
 	/* motor settings */
 	float motor_lin_target_velocity;	/* linear velocity the motor tries to hold */
@@ -321,10 +338,16 @@ typedef struct RigidBodyShardCon {
 	float spring_stiffness_x;
 	float spring_stiffness_y;
 	float spring_stiffness_z;
+	float spring_stiffness_ang_x;
+	float spring_stiffness_ang_y;
+	float spring_stiffness_ang_z;
 	/* amount of velocity lost over time */
 	float spring_damping_x;
 	float spring_damping_y;
 	float spring_damping_z;
+	float spring_damping_ang_x;
+	float spring_damping_ang_y;
+	float spring_damping_ang_z;
 
 	/* motor settings */
 	float motor_lin_target_velocity;	/* linear velocity the motor tries to hold */
@@ -392,14 +415,16 @@ typedef enum eRigidBodyCon_Flag {
 	/* motors */
 	RBC_FLAG_USE_MOTOR_LIN				= (1 << 14),
 	RBC_FLAG_USE_MOTOR_ANG				= (1 << 15),
+	/* angular springs */
+	RBC_FLAG_USE_SPRING_ANG_X			= (1 << 16),
+	RBC_FLAG_USE_SPRING_ANG_Y			= (1 << 17),
+	RBC_FLAG_USE_SPRING_ANG_Z			= (1 << 18),
 	/* prevent multiple removal and crash with kinematic deactivation */
-	RBC_FLAG_USE_KINEMATIC_DEACTIVATION = (1 << 16),
-
+	RBC_FLAG_USE_KINEMATIC_DEACTIVATION = (1 << 19),
 	/* mark this constraint to be able to go into "plastic" mode */
-	RBC_FLAG_USE_PLASTIC				= (1 << 17),
+	RBC_FLAG_USE_PLASTIC				= (1 << 20),
 	/* mark already active plastic constraints */
-	RBC_FLAG_PLASTIC_ACTIVE				= (1 << 18)
-
+	RBC_FLAG_PLASTIC_ACTIVE				= (1 << 21),
 } eRigidBodyCon_Flag;
 
 /* ******************************** */

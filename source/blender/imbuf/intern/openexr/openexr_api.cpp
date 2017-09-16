@@ -38,42 +38,6 @@
 #include <set>
 #include <errno.h>
 #include <algorithm>
-
-#include "DNA_scene_types.h" /* For OpenEXR compression constants */
-
-#include <openexr_api.h>
-
-#if defined (WIN32) && !defined(FREE_WINDOWS)
-#include "utfconv.h"
-#endif
-
-extern "C"
-{
-
-// The following prevents a linking error in debug mode for MSVC using the libs in CVS
-#if defined(WITH_OPENEXR) && defined(_WIN32) && defined(DEBUG) && !defined(__MINGW32__)
-_CRTIMP void __cdecl _invalid_parameter_noinfo(void)
-{
-}
-#endif
-
-#include "MEM_guardedalloc.h"
-
-#include "BLI_blenlib.h"
-#include "BLI_math_color.h"
-#include "BLI_threads.h"
-
-#include "BKE_idprop.h"
-#include "BKE_image.h"
-
-#include "IMB_imbuf_types.h"
-#include "IMB_imbuf.h"
-#include "IMB_allocimbuf.h"
-#include "IMB_metadata.h"
-
-#include "openexr_multi.h"
-}
-
 #include <iostream>
 
 #include <half.h>
@@ -100,6 +64,41 @@ _CRTIMP void __cdecl _invalid_parameter_noinfo(void)
 #include <ImfTiledOutputPart.h>
 #include <ImfPartType.h>
 #include <ImfPartHelper.h>
+
+#include "DNA_scene_types.h" /* For OpenEXR compression constants */
+
+#include <openexr_api.h>
+
+#if defined (WIN32)
+#include "utfconv.h"
+#endif
+
+extern "C"
+{
+
+// The following prevents a linking error in debug mode for MSVC using the libs in CVS
+#if defined(WITH_OPENEXR) && defined(_WIN32) && defined(DEBUG) && _MSC_VER < 1900
+_CRTIMP void __cdecl _invalid_parameter_noinfo(void)
+{
+}
+#endif
+
+#include "MEM_guardedalloc.h"
+
+#include "BLI_blenlib.h"
+#include "BLI_math_color.h"
+#include "BLI_threads.h"
+
+#include "BKE_idprop.h"
+#include "BKE_image.h"
+
+#include "IMB_imbuf_types.h"
+#include "IMB_imbuf.h"
+#include "IMB_allocimbuf.h"
+#include "IMB_metadata.h"
+
+#include "openexr_multi.h"
+}
 
 extern "C" {
 #include "IMB_colormanagement.h"
@@ -128,7 +127,7 @@ class Mem_IStream : public Imf::IStream
 {
 public:
 
-	Mem_IStream (unsigned char *exrbuf, size_t exrsize) :
+	Mem_IStream(unsigned char *exrbuf, size_t exrsize) :
 		IStream("dummy"), _exrpos(0), _exrsize(exrsize)
 	{
 		_exrbuf = exrbuf;
@@ -181,7 +180,7 @@ public:
 	: IStream(filename)
 	{
 		/* utf-8 file path support on windows */
-#if defined (WIN32) && !defined(FREE_WINDOWS)
+#if defined (WIN32)
 		wchar_t *wfilename = alloc_utf16_from_8(filename, 0);
 		ifs.open(wfilename, std::ios_base::binary);
 		free(wfilename);
@@ -244,7 +243,7 @@ public:
 	: OStream(filename)
 	{
 		/* utf-8 file path support on windows */
-#if defined (WIN32) && !defined(FREE_WINDOWS)
+#if defined (WIN32)
 		wchar_t *wfilename = alloc_utf16_from_8(filename, 0);
 		ofs.open(wfilename, std::ios_base::binary);
 		free(wfilename);
@@ -1035,15 +1034,16 @@ void IMB_exr_set_channel(void *handle, const char *layname, const char *passname
 	ExrChannel *echan;
 	char name[EXR_TOT_MAXNAME + 1];
 
-	if (layname) {
+	if (layname && layname[0] != '\0') {
 		char lay[EXR_LAY_MAXNAME + 1], pass[EXR_PASS_MAXNAME + 1];
 		BLI_strncpy(lay, layname, EXR_LAY_MAXNAME);
 		BLI_strncpy(pass, passname, EXR_PASS_MAXNAME);
 
 		BLI_snprintf(name, sizeof(name), "%s.%s", lay, pass);
 	}
-	else
+	else {
 		BLI_strncpy(name, passname, EXR_TOT_MAXNAME - 1);
+	}
 
 	echan = (ExrChannel *)BLI_findstring(&data->channels, name, offsetof(ExrChannel, name));
 
@@ -1052,8 +1052,9 @@ void IMB_exr_set_channel(void *handle, const char *layname, const char *passname
 		echan->ystride = ystride;
 		echan->rect = rect;
 	}
-	else
+	else {
 		printf("IMB_exr_set_channel error %s\n", name);
+	}
 }
 
 float  *IMB_exr_channel_rect(void *handle, const char *layname, const char *passname, const char *viewname)
@@ -1111,7 +1112,7 @@ void IMB_exr_write_channels(void *handle)
 
 	if (data->channels.first) {
 		const size_t num_pixels = ((size_t)data->width) * data->height;
-		half *rect_half = NULL, *current_rect_half;
+		half *rect_half = NULL, *current_rect_half = NULL;
 
 		/* We allocate teporary storage for half pixels for all the channels at once. */
 		if (data->num_half_channels != 0) {

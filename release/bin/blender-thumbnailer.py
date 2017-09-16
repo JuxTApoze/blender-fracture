@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # ##### BEGIN GPL LICENSE BLOCK #####
 #
@@ -37,7 +37,7 @@ import struct
 
 
 def open_wrapper_get():
-    """ wrap OS spesific read functionality here, fallback to 'open()'
+    """ wrap OS specific read functionality here, fallback to 'open()'
     """
 
     class GFileWrapper:

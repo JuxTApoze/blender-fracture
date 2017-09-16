@@ -30,6 +30,7 @@
 #include <limits.h>
 
 #include "RNA_define.h"
+#include "RNA_enum_types.h"
 
 #include "rna_internal.h"
 
@@ -53,6 +54,7 @@
 #include "BKE_context.h"
 #include "BKE_depsgraph.h"
 #include "BKE_particle.h"
+#include "BKE_texture.h"
 
 #include "smoke_API.h"
 
@@ -74,6 +76,21 @@ static void rna_Smoke_resetCache(Main *UNUSED(bmain), Scene *UNUSED(scene), Poin
 	if (settings->smd && settings->smd->domain)
 		settings->point_cache[0]->flag |= PTCACHE_OUTDATED;
 	DAG_id_tag_update(ptr->id.data, OB_RECALC_DATA);
+}
+
+static void rna_Smoke_cachetype_set(struct PointerRNA *ptr, int value)
+{
+	SmokeDomainSettings *settings = (SmokeDomainSettings *)ptr->data;
+	Object *ob = (Object *)ptr->id.data;
+
+	if (value != settings->cache_file_format) {
+		/* Clear old caches. */
+		PTCacheID id;
+		BKE_ptcache_id_from_smoke(&id, ob, settings->smd);
+		BKE_ptcache_id_clear(&id, PTCACHE_CLEAR_ALL, 0);
+
+		settings->cache_file_format = value;
+	}
 }
 
 static void rna_Smoke_reset(Main *bmain, Scene *scene, PointerRNA *ptr)
@@ -191,6 +208,29 @@ static int rna_SmokeModifier_velocity_grid_get_length(PointerRNA *ptr, int lengt
 	return length[0];
 }
 
+static int rna_SmokeModifier_heat_grid_get_length(
+        PointerRNA *ptr,
+        int length[RNA_MAX_ARRAY_DIMENSION])
+{
+#ifdef WITH_SMOKE
+	SmokeDomainSettings *sds = (SmokeDomainSettings *)ptr->data;
+	float *heat = NULL;
+	int size = 0;
+
+	/* Heat data is always low-resolution. */
+	if (sds->fluid) {
+		size = sds->res[0] * sds->res[1] * sds->res[2];
+		heat = smoke_get_heat(sds->fluid);
+	}
+
+	length[0] = (heat) ? size : 0;
+#else
+	(void)ptr;
+	length[0] = 0;
+#endif
+	return length[0];
+}
+
 static void rna_SmokeModifier_density_grid_get(PointerRNA *ptr, float *values)
 {
 #ifdef WITH_SMOKE
@@ -293,6 +333,34 @@ static void rna_SmokeModifier_flame_grid_get(PointerRNA *ptr, float *values)
 #endif
 }
 
+static void rna_SmokeModifier_heat_grid_get(PointerRNA *ptr, float *values)
+{
+#ifdef WITH_SMOKE
+	SmokeDomainSettings *sds = (SmokeDomainSettings *)ptr->data;
+	int length[RNA_MAX_ARRAY_DIMENSION];
+	int size = rna_SmokeModifier_heat_grid_get_length(ptr, length);
+	float *heat;
+
+	BLI_rw_mutex_lock(sds->fluid_mutex, THREAD_LOCK_READ);
+
+	heat = smoke_get_heat(sds->fluid);
+
+	if (heat != NULL) {
+		/* scale heat values from -2.0-2.0 to -1.0-1.0. */
+		for (int i = 0; i < size; i++) {
+			values[i] = heat[i] * 0.5f;
+		}
+	}
+	else {
+		memset(values, 0, size * sizeof(float));
+	}
+
+	BLI_rw_mutex_unlock(sds->fluid_mutex);
+#else
+	UNUSED_VARS(ptr, values);
+#endif
+}
+
 static void rna_SmokeFlow_density_vgroup_get(PointerRNA *ptr, char *value)
 {
 	SmokeFlowSettings *flow = (SmokeFlowSettings *)ptr->data;
@@ -315,6 +383,17 @@ static void rna_SmokeFlow_uvlayer_set(PointerRNA *ptr, const char *value)
 {
 	SmokeFlowSettings *flow = (SmokeFlowSettings *)ptr->data;
 	rna_object_uvlayer_name_set(ptr, value, flow->uvlayer_name, sizeof(flow->uvlayer_name));
+}
+
+static void rna_Smoke_use_color_ramp_set(PointerRNA *ptr, int value)
+{
+	SmokeDomainSettings *sds = (SmokeDomainSettings *)ptr->data;
+
+	sds->use_coba = value;
+
+	if (value && sds->coba == NULL) {
+		sds->coba = add_colorband(false);
+	}
 }
 
 #else
@@ -375,6 +454,32 @@ static void rna_def_smoke_domain_settings(BlenderRNA *brna)
 		{PTCACHE_FILE_OPENVDB, "OPENVDB", 0, "OpenVDB", "OpenVDB file format"},
 #endif
 		{0, NULL, 0, NULL, NULL}
+	};
+
+	static EnumPropertyItem smoke_view_items[] = {
+	    {MOD_SMOKE_SLICE_VIEW_ALIGNED, "VIEW_ALIGNED", 0, "View", "Slice volume parallel to the view plane"},
+	    {MOD_SMOKE_SLICE_AXIS_ALIGNED, "AXIS_ALIGNED", 0, "Axis", "Slice volume parallel to the major axis"},
+	    {0, NULL, 0, NULL, NULL}
+	};
+
+	static EnumPropertyItem axis_slice_method_items[] = {
+	    {AXIS_SLICE_FULL, "FULL", 0, "Full", "Slice the whole domain object"},
+	    {AXIS_SLICE_SINGLE, "SINGLE", 0, "Single", "Perform a single slice of the domain object"},
+	    {0, NULL, 0, NULL, NULL}
+	};
+
+	static EnumPropertyItem axis_slice_position_items[] = {
+	    {SLICE_AXIS_AUTO, "AUTO", 0, "Auto", "Adjust slice direction according to the view direction"},
+	    {SLICE_AXIS_X, "X", 0, "X", "Slice along the X axis"},
+	    {SLICE_AXIS_Y, "Y", 0, "Y", "Slice along the Y axis"},
+	    {SLICE_AXIS_Z, "Z", 0, "Z", "Slice along the Z axis"},
+	    {0, NULL, 0, NULL, NULL}
+	};
+
+	static EnumPropertyItem vector_draw_items[] = {
+	    {VECTOR_DRAW_NEEDLE, "NEEDLE", 0, "Needle", "Draw vectors as needles"},
+	    {VECTOR_DRAW_STREAMLINE, "STREAMLINE", 0, "Streamlines", "Draw vectors as streamlines"},
+	    {0, NULL, 0, NULL, NULL}
 	};
 
 	srna = RNA_def_struct(brna, "SmokeDomainSettings", NULL);
@@ -519,8 +624,8 @@ static void rna_def_smoke_domain_settings(BlenderRNA *brna)
 
 	prop = RNA_def_property(srna, "time_scale", PROP_FLOAT, PROP_NONE);
 	RNA_def_property_float_sdna(prop, NULL, "time_scale");
-	RNA_def_property_range(prop, 0.2, 1.5);
-	RNA_def_property_ui_range(prop, 0.2, 1.5, 0.02, 5);
+	RNA_def_property_range(prop, 0.0, 2.0);
+	RNA_def_property_ui_range(prop, 0.0, 2.0, 0.02, 5);
 	RNA_def_property_ui_text(prop, "Time Scale", "Adjust simulation speed");
 	RNA_def_property_update(prop, NC_OBJECT | ND_MODIFIER, "rna_Smoke_resetCache");
 
@@ -562,6 +667,14 @@ static void rna_def_smoke_domain_settings(BlenderRNA *brna)
 	RNA_def_property_dynamic_array_funcs(prop, "rna_SmokeModifier_color_grid_get_length");
 	RNA_def_property_float_funcs(prop, "rna_SmokeModifier_color_grid_get", NULL, NULL);
 	RNA_def_property_ui_text(prop, "Color Grid", "Smoke color grid");
+
+	prop = RNA_def_property(srna, "heat_grid", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_array(prop, 32);
+	RNA_def_property_flag(prop, PROP_DYNAMIC);
+	RNA_def_property_clear_flag(prop, PROP_EDITABLE);
+	RNA_def_property_dynamic_array_funcs(prop, "rna_SmokeModifier_heat_grid_get_length");
+	RNA_def_property_float_funcs(prop, "rna_SmokeModifier_heat_grid_get", NULL, NULL);
+	RNA_def_property_ui_text(prop, "Heat Grid", "Smoke heat grid");
 
 	prop = RNA_def_property(srna, "cell_size", PROP_FLOAT, PROP_XYZ); /* can change each frame when using adaptive domain */
 	RNA_def_property_clear_flag(prop, PROP_EDITABLE);
@@ -642,8 +755,104 @@ static void rna_def_smoke_domain_settings(BlenderRNA *brna)
 	prop = RNA_def_property(srna, "cache_file_format", PROP_ENUM, PROP_NONE);
 	RNA_def_property_enum_sdna(prop, NULL, "cache_file_format");
 	RNA_def_property_enum_items(prop, cache_file_type_items);
+	RNA_def_property_enum_funcs(prop, NULL, "rna_Smoke_cachetype_set", NULL);
 	RNA_def_property_ui_text(prop, "File Format", "Select the file format to be used for caching");
 	RNA_def_property_update(prop, NC_OBJECT | ND_MODIFIER, "rna_Smoke_resetCache");
+
+	/* display settings */
+
+	prop = RNA_def_property(srna, "slice_method", PROP_ENUM, PROP_NONE);
+	RNA_def_property_enum_sdna(prop, NULL, "slice_method");
+	RNA_def_property_enum_items(prop, smoke_view_items);
+	RNA_def_property_ui_text(prop, "View Method", "How to slice the volume for viewport rendering");
+	RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, NULL);
+
+	prop = RNA_def_property(srna, "axis_slice_method", PROP_ENUM, PROP_NONE);
+	RNA_def_property_enum_sdna(prop, NULL, "axis_slice_method");
+	RNA_def_property_enum_items(prop, axis_slice_method_items);
+	RNA_def_property_ui_text(prop, "Method", "");
+	RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, NULL);
+
+	prop = RNA_def_property(srna, "slice_axis", PROP_ENUM, PROP_NONE);
+	RNA_def_property_enum_sdna(prop, NULL, "slice_axis");
+	RNA_def_property_enum_items(prop, axis_slice_position_items);
+	RNA_def_property_ui_text(prop, "Axis", "");
+	RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, NULL);
+
+	prop = RNA_def_property(srna, "slice_per_voxel", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_float_sdna(prop, NULL, "slice_per_voxel");
+	RNA_def_property_range(prop, 0.0, 100.0);
+	RNA_def_property_ui_range(prop, 0.0, 5.0, 0.1, 1);
+	RNA_def_property_ui_text(prop, "Slice Per Voxel",
+	                         "How many slices per voxel should be generated");
+	RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, NULL);
+
+	prop = RNA_def_property(srna, "slice_depth", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_float_sdna(prop, NULL, "slice_depth");
+	RNA_def_property_range(prop, 0.0, 1.0);
+	RNA_def_property_ui_range(prop, 0.0, 1.0, 0.1, 3);
+	RNA_def_property_ui_text(prop, "Position", "Position of the slice");
+	RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, NULL);
+
+	prop = RNA_def_property(srna, "display_thickness", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_float_sdna(prop, NULL, "display_thickness");
+	RNA_def_property_range(prop, 0.001, 1000.0);
+	RNA_def_property_ui_range(prop, 0.1, 100.0, 0.1, 3);
+	RNA_def_property_ui_text(prop, "Thickness", "Thickness of smoke drawing in the viewport");
+	RNA_def_property_update(prop, NC_OBJECT | ND_MODIFIER, NULL);
+
+	prop = RNA_def_property(srna, "draw_velocity", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_sdna(prop, NULL, "draw_velocity", 0);
+	RNA_def_property_ui_text(prop, "Draw Velocity", "Toggle visualization of the velocity field as needles");
+	RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, NULL);
+
+	prop = RNA_def_property(srna, "vector_draw_type", PROP_ENUM, PROP_NONE);
+	RNA_def_property_enum_sdna(prop, NULL, "vector_draw_type");
+	RNA_def_property_enum_items(prop, vector_draw_items);
+	RNA_def_property_ui_text(prop, "Draw Type", "");
+	RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, NULL);
+
+	prop = RNA_def_property(srna, "vector_scale", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_float_sdna(prop, NULL, "vector_scale");
+	RNA_def_property_range(prop, 0.0, 1000.0);
+	RNA_def_property_ui_range(prop, 0.0, 100.0, 0.1, 3);
+	RNA_def_property_ui_text(prop, "Scale", "Multiplier for scaling the vectors");
+	RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, NULL);
+
+	/* --------- Color mapping. --------- */
+
+	prop = RNA_def_property(srna, "use_color_ramp", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_sdna(prop, NULL, "use_coba", 0);
+	RNA_def_property_boolean_funcs(prop, NULL, "rna_Smoke_use_color_ramp_set");
+	RNA_def_property_ui_text(prop, "Use Color Ramp",
+	                         "Render a simulation field while mapping its voxels values to the colors of a ramp");
+	RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, NULL);
+
+	static EnumPropertyItem coba_field_items[] = {
+	    {FLUID_FIELD_COLOR_R, "COLOR_R", 0, "Red", "Red component of the color field"},
+	    {FLUID_FIELD_COLOR_G, "COLOR_G", 0, "Green", "Green component of the color field"},
+	    {FLUID_FIELD_COLOR_B, "COLOR_B", 0, "Blue", "Blue component of the color field"},
+	    {FLUID_FIELD_DENSITY, "DENSITY", 0, "Density", "Quantity of soot in the fluid"},
+	    {FLUID_FIELD_FLAME, "FLAME", 0, "Flame", "Flame field"},
+	    {FLUID_FIELD_FUEL, "FUEL", 0, "Fuel", "Fuel field"},
+	    {FLUID_FIELD_HEAT, "HEAT", 0, "Heat", "Temperature of the fluid"},
+	    {FLUID_FIELD_VELOCITY_X, "VELOCITY_X", 0, "X Velocity", "X component of the velocity field"},
+	    {FLUID_FIELD_VELOCITY_Y, "VELOCITY_Y", 0, "Y Velocity", "Y component of the velocity field"},
+	    {FLUID_FIELD_VELOCITY_Z, "VELOCITY_Z", 0, "Z Velocity", "Z component of the velocity field"},
+	    {0, NULL, 0, NULL, NULL}
+	};
+
+	prop = RNA_def_property(srna, "coba_field", PROP_ENUM, PROP_NONE);
+	RNA_def_property_enum_sdna(prop, NULL, "coba_field");
+	RNA_def_property_enum_items(prop, coba_field_items);
+	RNA_def_property_ui_text(prop, "Field", "Simulation field to color map");
+	RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, NULL);
+
+	prop = RNA_def_property(srna, "color_ramp", PROP_POINTER, PROP_NEVER_NULL);
+	RNA_def_property_pointer_sdna(prop, NULL, "coba");
+	RNA_def_property_struct_type(prop, "ColorRamp");
+	RNA_def_property_ui_text(prop, "Color Ramp", "");
+	RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, NULL);
 }
 
 static void rna_def_smoke_flow_settings(BlenderRNA *brna)

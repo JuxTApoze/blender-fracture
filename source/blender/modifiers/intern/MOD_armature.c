@@ -96,7 +96,7 @@ static void foreachObjectLink(
 {
 	ArmatureModifierData *amd = (ArmatureModifierData *) md;
 
-	walk(userData, ob, &amd->object, IDWALK_NOP);
+	walk(userData, ob, &amd->object, IDWALK_CB_NOP);
 }
 
 static void updateDepgraph(ModifierData *md, DagForest *forest,
@@ -124,6 +124,7 @@ static void updateDepsgraph(ModifierData *md,
 	ArmatureModifierData *amd = (ArmatureModifierData *)md;
 	if (amd->object != NULL) {
 		DEG_add_object_relation(node, amd->object, DEG_OB_COMP_EVAL_POSE, "Armature Modifier");
+		DEG_add_object_relation(node, amd->object, DEG_OB_COMP_TRANSFORM, "Armature Modifier");
 	}
 }
 
@@ -206,6 +207,7 @@ ModifierTypeInfo modifierType_Armature = {
 	/* structSize */        sizeof(ArmatureModifierData),
 	/* type */              eModifierTypeType_OnlyDeform,
 	/* flags */             eModifierTypeFlag_AcceptsCVs |
+	                        eModifierTypeFlag_AcceptsLattice |
 	                        eModifierTypeFlag_SupportsEditmode,
 
 	/* copyData */          copyData,

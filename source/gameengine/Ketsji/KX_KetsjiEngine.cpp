@@ -80,12 +80,6 @@
 #define DEFAULT_LOGIC_TIC_RATE 60.0
 //#define DEFAULT_PHYSICS_TIC_RATE 60.0
 
-#ifdef FREE_WINDOWS /* XXX mingw64 (gcc 4.7.0) defines a macro for DrawText that translates to DrawTextA. Not good */
-#ifdef DrawText
-#undef DrawText
-#endif
-#endif
-
 const char KX_KetsjiEngine::m_profileLabels[tc_numCategories][15] = {
 	"Physics:",		// tc_physics
 	"Logic:",		// tc_logic
@@ -108,7 +102,7 @@ double KX_KetsjiEngine::m_suspendeddelta = 0.0;
 double KX_KetsjiEngine::m_average_framerate = 0.0;
 bool   KX_KetsjiEngine::m_restrict_anim_fps = false;
 short  KX_KetsjiEngine::m_exitkey = 130; // ESC Key
-
+bool   KX_KetsjiEngine::m_doRender = true;
 
 /**
  *	Constructor of the Ketsji Engine
@@ -173,6 +167,7 @@ KX_KetsjiEngine::KX_KetsjiEngine(KX_ISystem* system)
 	m_overrideFrameColorR(0.0f),
 	m_overrideFrameColorG(0.0f),
 	m_overrideFrameColorB(0.0f),
+	m_overrideFrameColorA(0.0f),
 
 	m_usedome(false)
 {
@@ -381,7 +376,7 @@ void KX_KetsjiEngine::RenderDome()
 			m_overrideFrameColorR,
 			m_overrideFrameColorG,
 			m_overrideFrameColorB,
-			1.0
+			m_overrideFrameColorA
 			);
 	}
 	else
@@ -749,6 +744,9 @@ bool KX_KetsjiEngine::NextFrame()
 					scene->setSuspendedTime(m_clockTime);
 			
 			m_logger->StartLog(tc_services, m_kxsystem->GetTimeInSeconds(), true);
+
+			// invalidates the shadow buffer from previous render/ImageRender because the scene has changed
+			scene->SetShadowDone(false);
 		}
 
 		// update system devices
@@ -771,7 +769,7 @@ bool KX_KetsjiEngine::NextFrame()
 	// Start logging time spent outside main loop
 	m_logger->StartLog(tc_outside, m_kxsystem->GetTimeInSeconds(), true);
 	
-	return doRender;
+	return doRender && m_doRender;
 }
 
 
@@ -805,7 +803,7 @@ void KX_KetsjiEngine::Render()
 				m_overrideFrameColorR,
 				m_overrideFrameColorG,
 				m_overrideFrameColorB,
-				1.0
+				m_overrideFrameColorA
 				);
 		}
 		else
@@ -1096,7 +1094,9 @@ void KX_KetsjiEngine::RenderShadowBuffers(KX_Scene *scene)
 
 		raslight->Update();
 
-		if (m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED && raslight->HasShadowBuffer()) {
+		if (light->GetVisible() && m_rasterizer->GetDrawingMode() == RAS_IRasterizer::KX_TEXTURED &&
+			raslight->HasShadowBuffer())
+		{
 			/* make temporary camera */
 			RAS_CameraData camdata = RAS_CameraData();
 			KX_Camera *cam = new KX_Camera(scene, scene->m_callbacks, camdata, true, true);
@@ -1131,6 +1131,8 @@ void KX_KetsjiEngine::RenderShadowBuffers(KX_Scene *scene)
 			cam->Release();
 		}
 	}
+	/* remember that we have a valid shadow buffer for that scene */
+	scene->SetShadowDone(true);
 }
 	
 // update graphics
@@ -1250,7 +1252,7 @@ void KX_KetsjiEngine::RenderFrame(KX_Scene* scene, KX_Camera* cam)
 	MT_Transform camtrans(cam->GetWorldToCamera());
 	MT_Matrix4x4 viewmat(camtrans);
 	
-	m_rasterizer->SetViewMatrix(viewmat, cam->NodeGetWorldOrientation(), cam->NodeGetWorldPosition(), cam->GetCameraData()->m_perspective);
+	m_rasterizer->SetViewMatrix(viewmat, cam->NodeGetWorldOrientation(), cam->NodeGetWorldPosition(), cam->NodeGetLocalScaling(), cam->GetCameraData()->m_perspective);
 	cam->SetModelviewMatrix(viewmat);
 
 	// The following actually reschedules all vertices to be
@@ -1923,6 +1925,16 @@ short KX_KetsjiEngine::GetExitKey()
 	return m_exitkey;
 }
 
+void KX_KetsjiEngine::SetRender(bool render)
+{
+	m_doRender = render;
+}
+
+bool KX_KetsjiEngine::GetRender()
+{
+	return m_doRender;
+}
+
 void KX_KetsjiEngine::SetShowFramerate(bool frameRate)
 {
 	m_show_framerate = frameRate;
@@ -2021,19 +2033,21 @@ bool KX_KetsjiEngine::GetUseOverrideFrameColor(void) const
 }
 
 
-void KX_KetsjiEngine::SetOverrideFrameColor(float r, float g, float b)
+void KX_KetsjiEngine::SetOverrideFrameColor(float r, float g, float b, float a)
 {
 	m_overrideFrameColorR = r;
 	m_overrideFrameColorG = g;
 	m_overrideFrameColorB = b;
+	m_overrideFrameColorA = a;
 }
 
 
-void KX_KetsjiEngine::GetOverrideFrameColor(float& r, float& g, float& b) const
+void KX_KetsjiEngine::GetOverrideFrameColor(float& r, float& g, float& b, float& a) const
 {
 	r = m_overrideFrameColorR;
 	g = m_overrideFrameColorG;
 	b = m_overrideFrameColorB;
+	a = m_overrideFrameColorA;
 }
 
 

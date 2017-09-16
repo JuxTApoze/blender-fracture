@@ -283,9 +283,8 @@ LinkNode *BLO_blendhandle_get_linkable_groups(BlendHandle *bh)
 			if (BKE_idcode_is_linkable(bhead->code)) {
 				const char *str = BKE_idcode_to_name(bhead->code);
 				
-				if (!BLI_gset_haskey(gathered, (void *)str)) {
+				if (BLI_gset_add(gathered, (void *)str)) {
 					BLI_linklist_prepend(&names, strdup(str));
-					BLI_gset_insert(gathered, (void *)str);
 				}
 			}
 		}
@@ -318,7 +317,9 @@ void BLO_blendhandle_close(BlendHandle *bh)
  * \param reports If the return value is NULL, errors indicating the cause of the failure.
  * \return The data of the file.
  */
-BlendFileData *BLO_read_from_file(const char *filepath, ReportList *reports)
+BlendFileData *BLO_read_from_file(
+        const char *filepath,
+        ReportList *reports, eBLOReadSkip skip_flags)
 {
 	BlendFileData *bfd = NULL;
 	FileData *fd;
@@ -326,6 +327,7 @@ BlendFileData *BLO_read_from_file(const char *filepath, ReportList *reports)
 	fd = blo_openblenderfile(filepath, reports);
 	if (fd) {
 		fd->reports = reports;
+		fd->skip_flags = skip_flags;
 		bfd = blo_read_file_internal(fd, filepath);
 		blo_freefiledata(fd);
 	}
@@ -342,7 +344,9 @@ BlendFileData *BLO_read_from_file(const char *filepath, ReportList *reports)
  * \param reports If the return value is NULL, errors indicating the cause of the failure.
  * \return The data of the file.
  */
-BlendFileData *BLO_read_from_memory(const void *mem, int memsize, ReportList *reports)
+BlendFileData *BLO_read_from_memory(
+        const void *mem, int memsize,
+        ReportList *reports, eBLOReadSkip skip_flags)
 {
 	BlendFileData *bfd = NULL;
 	FileData *fd;
@@ -350,6 +354,7 @@ BlendFileData *BLO_read_from_memory(const void *mem, int memsize, ReportList *re
 	fd = blo_openblendermemory(mem, memsize,  reports);
 	if (fd) {
 		fd->reports = reports;
+		fd->skip_flags = skip_flags;
 		bfd = blo_read_file_internal(fd, "");
 		blo_freefiledata(fd);
 	}
@@ -363,7 +368,9 @@ BlendFileData *BLO_read_from_memory(const void *mem, int memsize, ReportList *re
  * \param oldmain old main, from which we will keep libraries and other datablocks that should not have changed.
  * \param filename current file, only for retrieving library data.
  */
-BlendFileData *BLO_read_from_memfile(Main *oldmain, const char *filename, MemFile *memfile, ReportList *reports)
+BlendFileData *BLO_read_from_memfile(
+        Main *oldmain, const char *filename, MemFile *memfile,
+        ReportList *reports, eBLOReadSkip skip_flags)
 {
 	BlendFileData *bfd = NULL;
 	FileData *fd;
@@ -372,6 +379,7 @@ BlendFileData *BLO_read_from_memfile(Main *oldmain, const char *filename, MemFil
 	fd = blo_openblendermemfile(memfile, reports);
 	if (fd) {
 		fd->reports = reports;
+		fd->skip_flags = skip_flags;
 		BLI_strncpy(fd->relabase, filename, sizeof(fd->relabase));
 		
 		/* clear ob->proxy_from pointers in old main */
@@ -412,22 +420,23 @@ BlendFileData *BLO_read_from_memfile(Main *oldmain, const char *filename, MemFil
 			/* Even though directly used libs have been already moved to new main, indirect ones have not.
 			 * This is a bit annoying, but we have no choice but to keep them all for now - means some now unused
 			 * data may remain in memory, but think we'll have to live with it. */
-			Main *libmain;
+			Main *libmain, *libmain_next;
 			Main *newmain = bfd->main;
 			ListBase new_mainlist = {newmain, newmain};
 
-			for (libmain = oldmain->next; libmain; libmain = libmain->next) {
+			for (libmain = oldmain->next; libmain; libmain = libmain_next) {
+				libmain_next = libmain->next;
 				/* Note that LIB_INDIRECT does not work with libraries themselves, so we use non-NULL parent
 				 * to detect indirect-linked ones... */
 				if (libmain->curlib && (libmain->curlib->parent != NULL)) {
 					BLI_remlink(&old_mainlist, libmain);
 					BLI_addtail(&new_mainlist, libmain);
 				}
-#if 0
 				else {
+#ifdef PRINT_DEBUG
 					printf("Dropped Main for lib: %s\n", libmain->curlib->id.name);
-				}
 #endif
+				}
 			}
 			/* In any case, we need to move all lib datablocks themselves - those are 'first level data',
 			 * getting rid of them would imply updating spaces & co to prevent invalid pointers access. */
